@@ -11,9 +11,8 @@ public class PresetStore {
     static {
         HINTS.put("Frutiger Aero", "動画の Lightroom 設定そのまま。青空＋緑＋水・ガラスが映える");
         HINTS.put("Aero Sky", "空を画面の上2/3に。空をタップで測光、逆光気味でもOK");
-        HINTS.put("Aqua Glass", "水しぶき・グラス・水槽・泡に。光が当たる側から撮る");
+        HINTS.put("Aqua Glass", "水しぶき・グラス・水槽に。光が当たる側から撮る");
         HINTS.put("Eco Green", "芝生・葉っぱ＋青空。低い位置から見上げて空を入れる");
-        HINTS.put("Aero Bubble", "Frutiger Aero＋光のにじみ＋泡。撮るたびに泡の配置が変わる");
         HINTS.put("Vista Aurora", "夜景・ネオン・水槽の青緑の光に");
     }
 
@@ -31,14 +30,13 @@ public class PresetStore {
                 .set("temp", -25).set("tint", -4).set("vibrance", 35).set("saturation", 5)
                 .set("mix_s_green", -20).set("mix_h_aqua", -10).set("mix_s_aqua", 60).set("mix_l_aqua", 15).set("mix_s_blue", 30).set("mix_l_blue", 10)
                 .set("sh_hue", 210).set("sh_sat", 50).set("mid_hue", 185).set("mid_sat", 20).set("hl_hue", 180).set("hl_sat", 10)
-                .set("glow", 45).set("blur", 10).set("vignette", -25).set("bubbles", 35).set("camera_ev", -3));
+                .set("glow", 45).set("blur", 10).set("vignette", -25).set("camera_ev", -3));
         a.add(new Preset("Eco Green").set("contrast", 35).set("highlights", -85).set("shadows", 70).set("whites", 50).set("blacks", 5)
                 .set("temp", 5).set("tint", -6).set("vibrance", 40).set("saturation", 15)
                 .set("mix_h_yellow", -10).set("mix_s_yellow", 20).set("mix_h_green", -18).set("mix_s_green", 25).set("mix_l_green", 10)
                 .set("mix_h_aqua", -25).set("mix_s_aqua", 40).set("mix_s_blue", 25)
                 .set("mid_hue", 70).set("mid_sat", 35).set("sh_hue", 200).set("sh_sat", 40)
                 .set("clarity", 15).set("glow", 20).set("camera_ev", -5));
-        a.add(frutigerAero().copy("Aero Bubble").set("glow", 35).set("dehaze", -10).set("vignette", -20).set("bubbles", 55).set("camera_ev", -3).set("exposure", -20));
         a.add(new Preset("Vista Aurora").set("contrast", 25).set("highlights", -60).set("shadows", 40).set("whites", 30).set("blacks", -10)
                 .set("temp", -30).set("tint", -10).set("vibrance", 30).set("saturation", 10)
                 .set("mix_h_green", 15).set("mix_s_green", 30).set("mix_s_aqua", 50).set("mix_s_blue", 30)

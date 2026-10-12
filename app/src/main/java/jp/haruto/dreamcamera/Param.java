@@ -62,7 +62,6 @@ public final class Param {
         a.add(new Param("blur", "ソフト", "effect", 0, 100, 0, "ぼかし"));
         a.add(new Param("vignette", "周辺光量（−で白く）", "effect", -100, 100, 0, "周辺減光"));
         a.add(new Param("grain", "粒子", "effect", 0, 100, 0, "粒子"));
-        a.add(new Param("bubbles", "泡の装飾", "effect", 0, 100, 0, null));
         // 撮影（10 = 1.0EV）
         a.add(new Param("camera_ev", "撮影時の露出補正", "camera", -20, 20, 0, null));
         ALL = a.toArray(new Param[0]);

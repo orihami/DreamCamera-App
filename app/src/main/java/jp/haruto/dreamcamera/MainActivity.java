@@ -44,7 +44,7 @@ public class MainActivity extends AppCompatActivity {
     Uri pendingSharedUri;
     final ExecutorService io = Executors.newSingleThreadExecutor();
     final Handler ui = new Handler(Looper.getMainLooper());
-    long bubbleSeed = System.nanoTime();
+    long grainSeed = System.nanoTime();
     boolean hdrWanted, hdrActive, comparing, previewQueued;
     String tab = "light"; int mixColor = 4, zone = 0; float appliedEv = Float.NaN;
     SharedPreferences prefs;
@@ -276,11 +276,9 @@ public class MainActivity extends AppCompatActivity {
         if (w == 0 || h == 0) { DisplayMetrics dm = getResources().getDisplayMetrics(); w = dm.widthPixels; h = dm.heightPixels; }
         if (comparing) {
             preview.setRenderEffect(null);
-            overlay.setBubbles(0, bubbleSeed);
         } else {
             try { preview.setRenderEffect(PreviewEffects.build(p, w, h)); }
             catch (Exception e) { preview.setRenderEffect(null); status.setText("プレビュー効果エラー: " + e.getMessage()); }
-            overlay.setBubbles(p.get("bubbles"), bubbleSeed);
         }
         applyCameraEv();
     }
@@ -387,7 +385,7 @@ public class MainActivity extends AppCompatActivity {
                 for (Param d : Param.group(t)) addSlider(d, d.label);
         }
         if (t.equals("camera")) note("空を白飛びさせないには −0.3〜−0.7 EV がおすすめ。この値はプレビューにもそのまま反映され、プリセットごとに保存されます。\n画面タップ＝そこにピントと明るさを合わせる（空をタップすると空が濃くなる）。HDR は対応端末のみ。");
-        if (t.equals("effect")) note("光のにじみ＝明るい所がふわっと光る。周辺光量をマイナスにすると四隅が白く明るくなる（Aero っぽい）。泡は撮るたびに配置が変わります。明瞭度は保存画像にだけ効きます。");
+        if (t.equals("effect")) note("光のにじみ＝明るい所がふわっと光る。周辺光量をマイナスにすると四隅が白く明るくなる（Aero っぽい）。明瞭度は保存画像にだけ効きます。");
         note("項目名を長押しで初期値に戻す · 画面長押しで加工前と比較");
     }
 
@@ -520,7 +518,7 @@ public class MainActivity extends AppCompatActivity {
     void shoot() {
         if (capture == null) return;
         Preset chosen = active().copy(active().name);
-        long seed = bubbleSeed;
+        long seed = grainSeed;
         status.setText("撮影・2枚を処理中…");
         File tmp = new File(getCacheDir(), "capture.jpg");
         capture.takePicture(new ImageCapture.OutputFileOptions.Builder(tmp).build(), io, new ImageCapture.OnImageSavedCallback() {
@@ -532,7 +530,7 @@ public class MainActivity extends AppCompatActivity {
                     Bitmap fx = PhotoProcessor.apply(oriented(tmp), chosen, seed);
                     save(fx, "DC_" + stamp + "_" + safe(chosen.name) + ".jpg");
                     tmp.delete();
-                    runOnUiThread(() -> { status.setText("保存しました：原本＋「" + chosen.name + "」"); bubbleSeed = System.nanoTime(); applyPreview(); });
+                    runOnUiThread(() -> { status.setText("保存しました：原本＋「" + chosen.name + "」"); grainSeed = System.nanoTime(); });
                 } catch (Throwable e) { runOnUiThread(() -> status.setText("保存失敗: " + e.getMessage())); }
             }
         });
@@ -542,7 +540,7 @@ public class MainActivity extends AppCompatActivity {
 
     void processExisting(Uri uri) {
         Preset chosen = active().copy(active().name);
-        long seed = bubbleSeed;
+        long seed = grainSeed;
         status.setText("写真を「" + chosen.name + "」で加工中…");
         io.execute(() -> {
             try {

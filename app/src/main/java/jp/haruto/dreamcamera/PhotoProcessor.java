@@ -3,7 +3,7 @@ package jp.haruto.dreamcamera;
 import android.graphics.*;
 import java.util.stream.IntStream;
 
-/** 保存用のフル解像度処理。色は ColorEngine の LUT、その後に明瞭度・ソフト・光のにじみ・周辺光量・粒子・泡。 */
+/** 保存用のフル解像度処理。色は ColorEngine の LUT、その後に明瞭度・ソフト・光のにじみ・周辺光量・粒子。 */
 public final class PhotoProcessor {
     public static Bitmap apply(Bitmap src, Preset p, long seed) {
         Bitmap out = src.isMutable() && src.getConfig() == Bitmap.Config.ARGB_8888 ? src : src.copy(Bitmap.Config.ARGB_8888, true);
@@ -72,8 +72,6 @@ public final class PhotoProcessor {
             });
             out.setPixels(px, 0, w, 0, 0, w, h);
         }
-        float bub = p.get("bubbles");
-        if (bub > 0) BubbleOverlay.draw(new Canvas(out), w, h, bub, seed);
         return out;
     }
 
