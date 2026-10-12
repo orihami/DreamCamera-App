@@ -12,13 +12,14 @@ final class ColorEngine {
     static final int N = 33;
     private static final float[] CENTERS = {0, 30, 60, 120, 180, 240, 270, 300, 360};
 
-    private final float rG, gG, bG, hl, sh, wh, bk, con, fade, sat, vib, hueRot, dehaze, pivot, width;
+    private final float amount, rG, gG, bG, hl, sh, wh, bk, con, fade, sat, vib, hueRot, dehaze, pivot, width;
     private final float[] mixH = new float[8], mixS = new float[8], mixL = new float[8];
     private final float[][] tint = new float[3][3];
     private final float[] zoneLum = new float[3];
     private final boolean mix, grade;
 
     ColorEngine(Preset p) {
+        amount = p.get("amount") / 100f;
         float t = p.get("temp") / 100f, ti = p.get("tint") / 100f, e = (float) Math.pow(2, p.get("exposure") / 50f);
         rG = e * pw(1 + 0.25f * t) * pw(1 + 0.06f * ti) * pw(1 + p.get("red") / 100f);
         gG = e * pw(1 - 0.2f * ti) * pw(1 + p.get("green") / 100f);
@@ -51,6 +52,7 @@ final class ColorEngine {
 
     /** c: sRGB 0..1 を上書きする。 */
     void map(float[] c) {
+        float i0 = c[0], i1 = c[1], i2 = c[2];
         float r = gam(lin(c[0]) * rG), g = gam(lin(c[1]) * gG), b = gam(lin(c[2]) * bG);
         if (dehaze > 0) {
             float a = 0.12f * dehaze;
@@ -113,7 +115,7 @@ final class ColorEngine {
             g += w0 * (tint[0][1] + zoneLum[0]) + w1 * (tint[1][1] + zoneLum[1]) + w2 * (tint[2][1] + zoneLum[2]);
             b += w0 * (tint[0][2] + zoneLum[0]) + w1 * (tint[1][2] + zoneLum[1]) + w2 * (tint[2][2] + zoneLum[2]);
         }
-        c[0] = cl(r); c[1] = cl(g); c[2] = cl(b);
+        c[0] = i0 + (cl(r) - i0) * amount; c[1] = i1 + (cl(g) - i1) * amount; c[2] = i2 + (cl(b) - i2) * amount;
     }
 
     /** [(b*N+g)*N+r]*3 の順に RGB を並べた LUT。 */

@@ -31,7 +31,7 @@ final class PreviewEffects {
 
     static RenderEffect build(Preset p, int w, int h) {
         RenderEffect e = Build.VERSION.SDK_INT >= 33 ? lutEffect(p) : RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(fallback(p)));
-        float m = Math.max(1, Math.min(w, h)), soft = p.get("blur") / 100f, glow = p.get("glow") / 100f;
+        float m = Math.max(1, Math.min(w, h)), soft = p.get("blur") / 100f * p.k(), glow = p.get("glow") / 100f * p.k();
         if (soft > 0) {
             RenderEffect blur = RenderEffect.createBlurEffect(m * 0.008f, m * 0.008f, e, Shader.TileMode.CLAMP);
             e = RenderEffect.createBlendModeEffect(e, RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(alpha(soft * 0.5f)), blur), BlendMode.SRC_OVER);
@@ -40,7 +40,7 @@ final class PreviewEffects {
             RenderEffect bright = RenderEffect.createColorFilterEffect(new ColorMatrixColorFilter(threshold(0.6f, glow * 1.1f)), e);
             e = RenderEffect.createBlendModeEffect(e, RenderEffect.createBlurEffect(m * 0.035f, m * 0.035f, bright, Shader.TileMode.CLAMP), BlendMode.SCREEN);
         }
-        float vig = p.get("vignette") / 100f, grain = p.get("grain") / 100f;
+        float vig = p.get("vignette") / 100f * p.k(), grain = p.get("grain") / 100f * p.k();
         if (Build.VERSION.SDK_INT >= 33 && (vig != 0 || grain > 0)) e = finish(e, w, h, vig, grain);
         return e;
     }

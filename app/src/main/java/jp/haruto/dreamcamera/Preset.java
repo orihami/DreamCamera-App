@@ -9,6 +9,11 @@ public class Preset {
     public String name;
     public final float[] v = new float[Param.ALL.length];
     public boolean builtin;
+    /** aero / film / my */
+    public String category = "my";
+
+    /** 強さ（0..1）。空間効果にかける。 */
+    public float k() { return get("amount") / 100f; }
 
     public Preset(String name) {
         this.name = name;
@@ -33,6 +38,7 @@ public class Preset {
     public Preset copy(String n) {
         Preset p = new Preset(n);
         System.arraycopy(v, 0, p.v, 0, v.length);
+        p.category = category;
         return p;
     }
 

@@ -30,7 +30,7 @@ public final class PhotoProcessor {
         });
         out.setPixels(px, 0, w, 0, 0, w, h);
 
-        final float clar = p.get("clarity") / 100f, soft = p.get("blur") / 100f, glow = p.get("glow") / 100f, vig = p.get("vignette") / 100f, grain = p.get("grain") / 100f;
+        final float k = p.k(), clar = p.get("clarity") / 100f * k, soft = p.get("blur") / 100f * k, glow = p.get("glow") / 100f * k, vig = p.get("vignette") / 100f * k, grain = p.get("grain") / 100f * k;
         final Small cs = clar != 0 ? Small.of(out, 160, 2, 0) : null;
         final Small ss = soft > 0 ? Small.of(out, 480, 1, 0) : null;
         final Small gs = glow > 0 ? Small.of(out, 128, 2, 0.6f) : null;
@@ -55,8 +55,8 @@ public final class PhotoProcessor {
                     }
                     if (gs != null) {
                         gs.sample(u, v, t);
-                        float k = glow * 1.1f;
-                        r = screen(r, t[0] * k); g = screen(g, t[1] * k); b = screen(b, t[2] * k);
+                        float kg = glow * 1.1f;
+                        r = screen(r, t[0] * kg); g = screen(g, t[1] * kg); b = screen(b, t[2] * kg);
                     }
                     if (vig != 0) {
                         float dx = (u - 0.5f) * 2, m = ColorEngine.smooth(0.15f, 1f, 0.5f * (dx * dx + dy * dy));

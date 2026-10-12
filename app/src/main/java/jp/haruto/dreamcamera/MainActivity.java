@@ -8,8 +8,10 @@ import android.graphics.drawable.*;
 import android.net.Uri;
 import android.os.*;
 import android.provider.MediaStore;
+import android.text.TextUtils;
 import android.util.DisplayMetrics;
 import android.util.Range;
+import android.util.Size;
 import android.view.*;
 import android.widget.*;
 import androidx.activity.OnBackPressedCallback;
@@ -23,6 +25,7 @@ import androidx.camera.extensions.ExtensionsManager;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.WindowCompat;
 import androidx.exifinterface.media.ExifInterface;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -34,42 +37,68 @@ import java.util.concurrent.*;
 public class MainActivity extends AppCompatActivity {
     static final String[] TABS = {"light", "color", "mixer", "grade", "effect", "camera"};
     static final String[] TAB_LABELS = {"ライト", "カラー", "ミキサー", "グレーディング", "効果", "撮影"};
-    static final int ACCENT = 0xFF4FC3F7;
+    static final String[] CATS = {"aero", "film", "my"};
+    static final String[] CAT_LABELS = {"Aero", "いろいろ", "マイ"};
+    /** メイン画面のかんたん調整：強さ(%)・明るさ(0.1EV)・暖かさ */
+    static final String[] QUICK_LABELS = {"強さ", "明るさ", "暖かさ"};
+    static final float[] QUICK_MIN = {0, -20, -50}, QUICK_MAX = {100, 20, 50}, QUICK_DEF = {100, 0, 0};
+    static final int BG = 0xFF0A0D12, TEXT = 0xFFE8F1F7, SUB = 0xFF9FB3C2;
 
-    PreviewView preview; OverlayView overlay;
+    PreviewView preview; OverlayView overlay; View flash;
+    LinearLayout bottom, editor, editorBody, tabRow, catRow, thumbRow, quickTabs, shareBar;
+    TextView title, status, quickValue; Button shutter, quickReset; SeekBar quickBar; ImageView lastThumb; EditText nameField;
     ImageCapture capture; Camera camera; ProcessCameraProvider provider; ExtensionsManager extensions;
     ArrayList<Preset> presets; Preset current, editing;
-    LinearLayout chips, controls, editor, editorBody, tabRow;
-    TextView title, status; Button gallery, gridBtn, hdrBtn; EditText nameField;
-    Uri pendingSharedUri;
-    final ExecutorService io = Executors.newSingleThreadExecutor();
+    final Map<Preset, ImageView> thumbViews = new LinkedHashMap<>();
+    final ExecutorService io = Executors.newSingleThreadExecutor(), thumbExec = Executors.newSingleThreadExecutor();
     final Handler ui = new Handler(Looper.getMainLooper());
-    long grainSeed = System.nanoTime();
-    boolean hdrWanted, hdrActive, comparing, previewQueued;
-    String tab = "light"; int mixColor = 4, zone = 0; float appliedEv = Float.NaN;
     SharedPreferences prefs;
     OnBackPressedCallback backToCancel;
+    String cat = "aero", tab = "light";
+    int quick = 0, mixColor = 4, zone = 0;
+    boolean back, hdrWanted, hdrActive, saveOriginal, volumeShutter, comparing, previewQueued, busy, thumbBusy, resumed, settingQuick;
+    float appliedEv = Float.NaN;
+    long grainSeed = System.nanoTime();
+    Uri pendingShared, lastUri;
+    Bitmap sample;
 
-    ActivityResultLauncher<String> permission = registerForActivityResult(new ActivityResultContracts.RequestPermission(), ok -> { if (ok) startCamera(); else status.setText("カメラ権限が必要です"); });
+    final Runnable thumbTick = new Runnable() { @Override public void run() { refreshThumbs(); if (resumed) ui.postDelayed(this, 2500); } };
+    final Runnable hintBack = this::showHint;
+
+    ActivityResultLauncher<String> permission = registerForActivityResult(new ActivityResultContracts.RequestPermission(), ok -> { if (ok) startCamera(); else say("カメラ権限が必要です（設定から許可してください）"); });
     ActivityResultLauncher<String> photoPicker = registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> { if (uri != null) processExisting(uri); });
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         prefs = getSharedPreferences("p", 0);
         hdrWanted = prefs.getBoolean("hdr", true);
-        buildUi();
+        back = prefs.getBoolean("back", true);
+        saveOriginal = prefs.getBoolean("original", true);
+        volumeShutter = prefs.getBoolean("volume", true);
+        String lu = prefs.getString("lastUri", null);
+        lastUri = lu != null ? Uri.parse(lu) : null;
         presets = PresetStore.load(this);
         current = find(prefs.getString("last", PresetStore.DEFAULT_NAME));
+        cat = current.category;
+        buildUi();
         overlay.setGrid(prefs.getBoolean("grid", false));
-        refreshChips();
+        refreshCats();
+        refreshQuick();
         preview.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> { if (r - l != or - ol || bt - t != ob - ot) applyPreview(); });
         applyPreview();
         showHint();
+        loadLastThumb();
         backToCancel = new OnBackPressedCallback(false) { @Override public void handleOnBackPressed() { closeEditor(false); } };
         getOnBackPressedDispatcher().addCallback(this, backToCancel);
-        boolean shared = handleShare(getIntent()), granted = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
-        if (granted) startCamera(); else if (!shared) permission.launch(Manifest.permission.CAMERA);
+        handleShare(getIntent());
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) startCamera();
+        else if (pendingShared == null) permission.launch(Manifest.permission.CAMERA);
     }
+
+    @Override protected void onResume() { super.onResume(); resumed = true; ui.removeCallbacks(thumbTick); ui.post(thumbTick); }
+
+    @Override protected void onPause() { super.onPause(); resumed = false; ui.removeCallbacks(thumbTick); }
 
     Preset find(String name) {
         for (Preset p : presets) if (p.name.equals(name)) return p;
@@ -78,112 +107,201 @@ public class MainActivity extends AppCompatActivity {
 
     Preset active() { return editing != null ? editing : current; }
 
+    // ---------- かんたん調整（プリセットごとに記憶） ----------
+
+    float[] quickOf(Preset p) {
+        float[] q = QUICK_DEF.clone();
+        String s = prefs.getString("q_" + p.name, null);
+        if (s != null) {
+            String[] a = s.split(",");
+            for (int i = 0; i < 3 && i < a.length; i++) try { q[i] = Float.parseFloat(a[i]); } catch (NumberFormatException ignored) {}
+        }
+        return q;
+    }
+
+    void saveQuick(Preset p, float[] q) { prefs.edit().putString("q_" + p.name, q[0] + "," + q[1] + "," + q[2]).apply(); }
+
+    /** 実際に使う設定：プリセット＋かんたん調整。 */
+    Preset effective(Preset base) {
+        float[] q = quickOf(editing != null && base == editing ? current : base);
+        Preset e = base.copy(base.name);
+        e.set("amount", q[0]);
+        e.set("camera_ev", base.get("camera_ev") + q[1]);
+        e.set("temp", base.get("temp") + q[2]);
+        return e;
+    }
+
     // ---------- 画面 ----------
 
     void buildUi() {
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.rgb(9, 7, 13));
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(BG);
+
+        LinearLayout top = new LinearLayout(this);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        Button settings = small("⚙");
+        settings.setTextSize(18);
+        settings.setContentDescription("設定");
+        settings.setOnClickListener(v -> openSettings());
+        top.addView(settings, new LinearLayout.LayoutParams(dp(48), dp(40)));
+        title = new TextView(this);
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(17);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        Button flip = small("⟲");
+        flip.setTextSize(18);
+        flip.setContentDescription("カメラ切替");
+        flip.setOnClickListener(v -> { back = !back; prefs.edit().putBoolean("back", back).apply(); bindCamera(); });
+        top.addView(flip, new LinearLayout.LayoutParams(dp(48), dp(40)));
+        root.addView(top, new LinearLayout.LayoutParams(-1, -2));
+
+        // 保存される範囲（4:3）だけを表示する
+        FrameLayout stage = new FrameLayout(this);
+        AspectFrame box = new AspectFrame(this);
         preview = new PreviewView(this);
         preview.setImplementationMode(PreviewView.ImplementationMode.COMPATIBLE);
         preview.setScaleType(PreviewView.ScaleType.FILL_CENTER);
-        root.addView(preview, new FrameLayout.LayoutParams(-1, -1));
+        box.addView(preview, new FrameLayout.LayoutParams(-1, -1));
         overlay = new OverlayView(this);
-        root.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
-        GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
-            @Override public boolean onDown(MotionEvent e) { return true; }
-            @Override public boolean onSingleTapUp(MotionEvent e) { focusAt(e.getX(), e.getY()); return true; }
-            @Override public void onLongPress(MotionEvent e) { comparing = true; applyPreview(); status.setText("加工前を表示中（指を離すと戻る）"); }
-        });
-        overlay.setOnTouchListener((v, e) -> {
-            gd.onTouchEvent(e);
-            int a = e.getActionMasked();
-            if ((a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) && comparing) { comparing = false; applyPreview(); showHint(); }
-            return true;
-        });
+        box.addView(overlay, new FrameLayout.LayoutParams(-1, -1));
+        flash = new View(this);
+        flash.setBackgroundColor(Color.WHITE);
+        flash.setAlpha(0);
+        box.addView(flash, new FrameLayout.LayoutParams(-1, -1));
+        stage.addView(box, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        root.addView(stage, new LinearLayout.LayoutParams(-1, 0, 1));
+        setupGestures();
 
-        LinearLayout top = new LinearLayout(this);
-        top.setPadding(dp(22), dp(44), dp(14), dp(12));
-        top.setGravity(Gravity.CENTER_VERTICAL);
-        title = new TextView(this);
-        title.setTextColor(Color.WHITE);
-        title.setTextSize(19);
-        title.setTypeface(null, Typeface.BOLD);
-        title.setShadowLayer(6, 0, 1, 0x99000000);
-        top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        gridBtn = small("▦");
-        gridBtn.setContentDescription("グリッド");
-        gridBtn.setOnClickListener(v -> { overlay.setGrid(!overlay.grid()); prefs.edit().putBoolean("grid", overlay.grid()).apply(); updateTopButtons(); });
-        top.addView(gridBtn, new LinearLayout.LayoutParams(dp(48), dp(40)));
-        hdrBtn = small("HDR");
-        hdrBtn.setOnClickListener(v -> { hdrWanted = !hdrWanted; prefs.edit().putBoolean("hdr", hdrWanted).apply(); bindCamera(); });
-        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(dp(58), dp(40));
-        hp.setMargins(dp(8), 0, 0, 0);
-        top.addView(hdrBtn, hp);
-        root.addView(top, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
+        bottom = new LinearLayout(this);
+        bottom.setOrientation(LinearLayout.VERTICAL);
+        shareBar = new LinearLayout(this);
+        shareBar.setGravity(Gravity.CENTER_VERTICAL);
+        shareBar.setVisibility(View.GONE);
+        TextView st = label("共有された写真があります", 13, TEXT);
+        shareBar.addView(st, new LinearLayout.LayoutParams(0, -2, 1));
+        Button go = small("この色で加工");
+        go.setPadding(dp(12), 0, dp(12), 0);
+        go.setBackground(pill(true));
+        go.setOnClickListener(v -> { Uri u = pendingShared; setShared(null); if (u != null) processExisting(u); });
+        shareBar.addView(go, new LinearLayout.LayoutParams(-2, dp(36)));
+        Button no = small("×");
+        no.setOnClickListener(v -> setShared(null));
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(dp(40), dp(36));
+        np.setMargins(dp(6), 0, 0, 0);
+        shareBar.addView(no, np);
+        bottom.addView(shareBar, new LinearLayout.LayoutParams(-1, -2));
 
-        controls = new LinearLayout(this);
-        controls.setOrientation(LinearLayout.VERTICAL);
-        controls.setPadding(dp(12), dp(12), dp(12), dp(34));
-        controls.setBackgroundColor(0xD609070D);
-        HorizontalScrollView scroll = new HorizontalScrollView(this);
-        scroll.setHorizontalScrollBarEnabled(false);
-        chips = new LinearLayout(this);
-        scroll.addView(chips);
-        controls.addView(scroll, new LinearLayout.LayoutParams(-1, -2));
-        status = new TextView(this);
-        status.setTextColor(0xFFD8E8F2);
+        catRow = new LinearLayout(this);
+        catRow.setPadding(0, dp(8), 0, dp(2));
+        bottom.addView(catRow);
+        HorizontalScrollView ts = new HorizontalScrollView(this);
+        ts.setHorizontalScrollBarEnabled(false);
+        thumbRow = new LinearLayout(this);
+        ts.addView(thumbRow);
+        bottom.addView(ts, new LinearLayout.LayoutParams(-1, -2));
+
+        LinearLayout qr = new LinearLayout(this);
+        qr.setGravity(Gravity.CENTER_VERTICAL);
+        qr.setPadding(0, dp(6), 0, 0);
+        quickTabs = new LinearLayout(this);
+        qr.addView(quickTabs, new LinearLayout.LayoutParams(0, -2, 1));
+        quickValue = label("", 14, 0xFFB3E5FC);
+        qr.addView(quickValue);
+        quickReset = small("↺");
+        quickReset.setContentDescription("元に戻す");
+        quickReset.setOnClickListener(v -> setQuickValue(QUICK_DEF[quick], true));
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(dp(40), dp(32));
+        rp.setMargins(dp(8), 0, 0, 0);
+        qr.addView(quickReset, rp);
+        bottom.addView(qr, new LinearLayout.LayoutParams(-1, -2));
+        quickBar = new SeekBar(this);
+        quickBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int n, boolean user) { if (!settingQuick) setQuickValue(QUICK_MIN[quick] + n, false); }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) { refreshThumbs(); }
+        });
+        bottom.addView(quickBar, new LinearLayout.LayoutParams(-1, dp(36)));
+
+        status = label("", 13, SUB);
         status.setGravity(Gravity.CENTER);
-        status.setPadding(0, dp(8), 0, dp(8));
-        controls.addView(status);
+        status.setMaxLines(2);
+        status.setPadding(0, dp(2), 0, dp(6));
+        bottom.addView(status, new LinearLayout.LayoutParams(-1, -2));
+
         LinearLayout actions = new LinearLayout(this);
-        actions.setGravity(Gravity.CENTER);
-        gallery = action("▣\n写真");
-        gallery.setOnClickListener(v -> {
-            if (pendingSharedUri != null) { Uri u = pendingSharedUri; pendingSharedUri = null; gallery.setText("▣\n写真"); processExisting(u); }
-            else photoPicker.launch("image/*");
-        });
-        actions.addView(gallery, new LinearLayout.LayoutParams(0, dp(76), 1));
-        Button shutter = button("●");
-        shutter.setTextSize(42);
-        shutter.setTextColor(Color.WHITE);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        lastThumb = new ImageView(this);
+        lastThumb.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        lastThumb.setBackground(rounded(0x33FFFFFF, 0x66FFFFFF, 12));
+        lastThumb.setClipToOutline(true);
+        lastThumb.setContentDescription("最後に撮った写真");
+        lastThumb.setOnClickListener(v -> openLast());
+        FrameLayout l = new FrameLayout(this);
+        l.addView(lastThumb, new FrameLayout.LayoutParams(dp(54), dp(54), Gravity.CENTER));
+        actions.addView(l, new LinearLayout.LayoutParams(0, dp(88), 1));
+        shutter = button("");
         shutter.setContentDescription("撮影");
-        shutter.setBackground(oval(0xFF29B6F6, 0xFFFFFFFF, 4));
+        shutter.setBackground(shutterDrawable());
         shutter.setOnClickListener(v -> shoot());
-        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(dp(88), dp(88));
-        sp.setMargins(dp(18), 0, dp(18), 0);
-        actions.addView(shutter, sp);
-        Button edit = action("☷\n調整");
+        actions.addView(shutter, new LinearLayout.LayoutParams(dp(80), dp(80)));
+        Button edit = small("調整");
+        edit.setTextSize(14);
         edit.setOnClickListener(v -> openEditor());
-        actions.addView(edit, new LinearLayout.LayoutParams(0, dp(76), 1));
-        controls.addView(actions, new LinearLayout.LayoutParams(-1, dp(92)));
-        root.addView(controls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        FrameLayout r = new FrameLayout(this);
+        r.addView(edit, new FrameLayout.LayoutParams(dp(64), dp(44), Gravity.CENTER));
+        actions.addView(r, new LinearLayout.LayoutParams(0, dp(88), 1));
+        bottom.addView(actions, new LinearLayout.LayoutParams(-1, -2));
+        root.addView(bottom, new LinearLayout.LayoutParams(-1, -2));
 
         buildEditor(root);
+        root.setOnApplyWindowInsetsListener((v, ins) -> {
+            android.graphics.Insets s = ins.getInsets(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            top.setPadding(dp(8) + s.left, s.top + dp(4), dp(8) + s.right, dp(4));
+            bottom.setPadding(dp(14) + s.left, 0, dp(14) + s.right, s.bottom + dp(10));
+            editor.setPadding(dp(14) + s.left, dp(8), dp(14) + s.right, s.bottom + dp(8));
+            return WindowInsets.CONSUMED;
+        });
         setContentView(root);
     }
 
-    void buildEditor(FrameLayout root) {
+    void buildEditor(LinearLayout root) {
         editor = new LinearLayout(this);
         editor.setOrientation(LinearLayout.VERTICAL);
-        editor.setPadding(dp(14), dp(10), dp(14), dp(28));
-        editor.setBackgroundColor(0xF20B0F16);
+        editor.setBackgroundColor(0xFF10151C);
         editor.setVisibility(View.GONE);
         LinearLayout head = new LinearLayout(this);
         head.setGravity(Gravity.CENTER_VERTICAL);
+        Button cancel = small("✕");
+        cancel.setContentDescription("やめる");
+        cancel.setOnClickListener(v -> closeEditor(false));
+        head.addView(cancel, new LinearLayout.LayoutParams(dp(44), dp(40)));
         nameField = new EditText(this);
         nameField.setSingleLine(true);
         nameField.setTextColor(Color.WHITE);
+        nameField.setTextSize(15);
         nameField.setHintTextColor(0x88FFFFFF);
         nameField.setHint("プリセット名");
-        head.addView(nameField, new LinearLayout.LayoutParams(0, -2, 1));
-        Button cancel = small("取消");
-        cancel.setOnClickListener(v -> closeEditor(false));
-        head.addView(cancel, new LinearLayout.LayoutParams(dp(64), dp(40)));
+        LinearLayout.LayoutParams nfp = new LinearLayout.LayoutParams(0, -2, 1);
+        nfp.setMargins(dp(8), 0, dp(8), 0);
+        head.addView(nameField, nfp);
+        Button compare = small("比較");
+        compare.setOnTouchListener((v, e) -> {
+            int a = e.getActionMasked();
+            if (a == MotionEvent.ACTION_DOWN) { comparing = true; applyPreview(); }
+            else if (a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) { comparing = false; applyPreview(); }
+            return true;
+        });
+        head.addView(compare, new LinearLayout.LayoutParams(dp(56), dp(40)));
         Button save = small("保存");
         save.setBackground(pill(true));
         save.setOnClickListener(v -> closeEditor(true));
-        LinearLayout.LayoutParams svp = new LinearLayout.LayoutParams(dp(64), dp(40));
-        svp.setMargins(dp(8), 0, 0, 0);
+        LinearLayout.LayoutParams svp = new LinearLayout.LayoutParams(dp(60), dp(40));
+        svp.setMargins(dp(6), 0, 0, 0);
         head.addView(save, svp);
         editor.addView(head);
         HorizontalScrollView ts = new HorizontalScrollView(this);
@@ -194,55 +312,221 @@ public class MainActivity extends AppCompatActivity {
         ScrollView body = new ScrollView(this);
         editorBody = new LinearLayout(this);
         editorBody.setOrientation(LinearLayout.VERTICAL);
-        editorBody.setPadding(0, dp(6), 0, dp(6));
+        editorBody.setPadding(0, dp(4), 0, dp(8));
         body.addView(editorBody);
         editor.addView(body, new LinearLayout.LayoutParams(-1, 0, 1));
-        root.addView(editor, new FrameLayout.LayoutParams(-1, (int) (getResources().getDisplayMetrics().heightPixels * 0.52f), Gravity.BOTTOM));
+        root.addView(editor, new LinearLayout.LayoutParams(-1, (int) (getResources().getDisplayMetrics().heightPixels * 0.46f)));
     }
 
-    Button button(String s) { Button b = new Button(this); b.setText(s); b.setAllCaps(false); return b; }
+    void setupGestures() {
+        ScaleGestureDetector sd = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            @Override public boolean onScale(ScaleGestureDetector d) {
+                if (camera == null) return false;
+                ZoomState z = camera.getCameraInfo().getZoomState().getValue();
+                if (z == null) return false;
+                float r = Math.max(z.getMinZoomRatio(), Math.min(z.getMaxZoomRatio(), z.getZoomRatio() * d.getScaleFactor()));
+                camera.getCameraControl().setZoomRatio(r);
+                overlay.showZoom(r);
+                return true;
+            }
+        });
+        GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override public boolean onDown(MotionEvent e) { return true; }
+            @Override public boolean onSingleTapUp(MotionEvent e) { focusAt(e.getX(), e.getY()); return true; }
+            @Override public void onLongPress(MotionEvent e) {
+                if (sd.isInProgress()) return;
+                comparing = true; applyPreview(); status.setText("加工前を表示中（指を離すと戻る）");
+            }
+        });
+        overlay.setOnTouchListener((v, e) -> {
+            sd.onTouchEvent(e);
+            if (e.getPointerCount() == 1) gd.onTouchEvent(e);
+            int a = e.getActionMasked();
+            if ((a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) && comparing) { comparing = false; applyPreview(); showHint(); }
+            return true;
+        });
+    }
 
-    Button action(String s) { Button b = button(s); b.setTextSize(14); b.setTextColor(Color.WHITE); b.setBackground(oval(0x33203040, 0x6680C8E8, 1)); return b; }
+    /** 中に 3:4 の枠を、置ける最大の大きさで作る。 */
+    static final class AspectFrame extends FrameLayout {
+        AspectFrame(Context c) { super(c); }
+
+        @Override protected void onMeasure(int ws, int hs) {
+            int W = MeasureSpec.getSize(ws), H = MeasureSpec.getSize(hs), w = W, h = W * 4 / 3;
+            if (H > 0 && h > H) { h = H; w = H * 3 / 4; }
+            super.onMeasure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+        }
+    }
+
+    TextView label(String s, int sp, int color) { TextView t = new TextView(this); t.setText(s); t.setTextSize(sp); t.setTextColor(color); return t; }
+
+    Button button(String s) { Button b = new Button(this); b.setText(s); b.setAllCaps(false); return b; }
 
     Button small(String s) {
         Button b = button(s);
         b.setTextSize(13); b.setTextColor(Color.WHITE); b.setPadding(0, 0, 0, 0); b.setMinWidth(0); b.setMinHeight(0); b.setMinimumWidth(0); b.setMinimumHeight(0);
+        b.setStateListAnimator(null);
         b.setBackground(pill(false));
         return b;
     }
 
-    GradientDrawable oval(int fill, int stroke, int sw) { GradientDrawable g = new GradientDrawable(); g.setShape(GradientDrawable.OVAL); g.setColor(fill); g.setStroke(dp(sw), stroke); return g; }
+    GradientDrawable rounded(int fill, int stroke, int radius) {
+        GradientDrawable g = new GradientDrawable();
+        g.setCornerRadius(dp(radius));
+        g.setColor(fill);
+        if (stroke != 0) g.setStroke(dp(2), stroke);
+        return g;
+    }
 
     GradientDrawable pill(boolean on) {
-        GradientDrawable g = new GradientDrawable();
-        g.setCornerRadius(dp(18));
-        g.setColor(on ? 0xCC0288D1 : 0x55202A36);
-        g.setStroke(dp(1), on ? 0xFFB3E5FC : 0x5590A4AE);
+        GradientDrawable g = rounded(on ? 0xCC0288D1 : 0x33FFFFFF, 0, 18);
+        g.setStroke(dp(1), on ? 0xFFB3E5FC : 0x33FFFFFF);
         return g;
+    }
+
+    Drawable shutterDrawable() {
+        GradientDrawable outer = new GradientDrawable();
+        outer.setShape(GradientDrawable.OVAL);
+        outer.setColor(0x00000000);
+        outer.setStroke(dp(4), Color.WHITE);
+        GradientDrawable inner = new GradientDrawable();
+        inner.setShape(GradientDrawable.OVAL);
+        inner.setColor(Color.WHITE);
+        LayerDrawable ld = new LayerDrawable(new Drawable[]{outer, inner});
+        ld.setLayerInset(1, dp(8), dp(8), dp(8), dp(8));
+        return ld;
     }
 
     int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
 
-    void refreshChips() {
-        chips.removeAllViews();
-        for (Preset p : presets) {
-            Button b = small(p.name);
+    void say(String s) {
+        status.setText(s);
+        ui.removeCallbacks(hintBack);
+        ui.postDelayed(hintBack, 4000);
+    }
+
+    void showHint() {
+        ui.removeCallbacks(hintBack);
+        String h = PresetStore.hint(current.name);
+        status.setText(h != null ? h : "タップでピント · 2本指でズーム · 長押しで加工前");
+    }
+
+    // ---------- プリセット一覧 ----------
+
+    void refreshCats() {
+        catRow.removeAllViews();
+        for (int i = 0; i < CATS.length; i++) {
+            String c = CATS[i];
+            Button b = small(CAT_LABELS[i]);
             b.setPadding(dp(14), 0, dp(14), 0);
-            b.setBackground(pill(p == current));
-            b.setOnClickListener(v -> select(p));
-            if (!p.builtin) b.setOnLongClickListener(v -> { confirmDelete(p); return true; });
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(38));
-            lp.setMargins(0, 0, dp(8), 0);
-            chips.addView(b, lp);
+            b.setBackground(pill(c.equals(cat)));
+            b.setOnClickListener(v -> { cat = c; refreshCats(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(32));
+            lp.setMargins(0, 0, dp(6), 0);
+            catRow.addView(b, lp);
         }
+        refreshThumbRow();
+    }
+
+    void refreshThumbRow() {
+        thumbRow.removeAllViews();
+        thumbViews.clear();
+        for (Preset p : presets) {
+            if (!p.category.equals(cat)) continue;
+            LinearLayout item = new LinearLayout(this);
+            item.setOrientation(LinearLayout.VERTICAL);
+            item.setGravity(Gravity.CENTER_HORIZONTAL);
+            ImageView iv = new ImageView(this);
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+            boolean sel = p == current;
+            iv.setBackground(rounded(0xFF1C2530, sel ? 0xFF4FC3F7 : 0, 12));
+            iv.setPadding(sel ? dp(3) : 0, sel ? dp(3) : 0, sel ? dp(3) : 0, sel ? dp(3) : 0);
+            iv.setClipToOutline(true);
+            item.addView(iv, new LinearLayout.LayoutParams(dp(64), dp(64)));
+            TextView t = label(p.name, 11, sel ? Color.WHITE : SUB);
+            t.setSingleLine(true);
+            t.setEllipsize(TextUtils.TruncateAt.END);
+            t.setGravity(Gravity.CENTER);
+            t.setPadding(0, dp(3), 0, 0);
+            item.addView(t, new LinearLayout.LayoutParams(dp(72), -2));
+            item.setOnClickListener(v -> { if (p == current) openEditor(); else select(p); });
+            item.setOnLongClickListener(v -> { if (p.builtin) { String h = PresetStore.hint(p.name); say(h != null ? h : p.name); } else manage(p); return true; });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+            lp.setMargins(0, dp(6), dp(4), 0);
+            thumbRow.addView(item, lp);
+            thumbViews.put(p, iv);
+        }
+        if (thumbViews.isEmpty()) {
+            TextView t = label("「調整」で色を作って保存すると、ここに並びます", 13, SUB);
+            t.setPadding(dp(4), dp(28), dp(4), dp(28));
+            thumbRow.addView(t);
+        }
+        refreshThumbs();
+    }
+
+    void refreshThumbs() {
+        if (thumbBusy || thumbViews.isEmpty() || editor.getVisibility() == View.VISIBLE) return;
+        Bitmap src = null;
+        try { src = preview.getBitmap(); } catch (Exception ignored) {}
+        if (src == null) { if (sample == null) sample = Thumbs.sample(120); src = sample; }
+        Bitmap sq = Thumbs.square(src, 120);
+        Map<Preset, Preset> jobs = new LinkedHashMap<>();
+        for (Preset p : thumbViews.keySet()) jobs.put(p, effective(p));
+        thumbBusy = true;
+        thumbExec.execute(() -> {
+            for (Map.Entry<Preset, Preset> j : jobs.entrySet()) {
+                Bitmap t = Thumbs.render(sq, j.getValue());
+                runOnUiThread(() -> { ImageView iv = thumbViews.get(j.getKey()); if (iv != null) iv.setImageBitmap(t); });
+            }
+            runOnUiThread(() -> thumbBusy = false);
+        });
     }
 
     void select(Preset p) {
         current = p;
         prefs.edit().putString("last", p.name).apply();
-        refreshChips();
+        refreshThumbRow();
+        refreshQuick();
         applyPreview();
         showHint();
+    }
+
+    void manage(Preset p) {
+        new MaterialAlertDialogBuilder(this).setTitle(p.name)
+                .setItems(new String[]{"名前を変える", "削除する"}, (d, w) -> { if (w == 0) rename(p); else confirmDelete(p); })
+                .show();
+    }
+
+    void rename(Preset p) {
+        EditText f = new EditText(this);
+        f.setSingleLine(true);
+        f.setText(p.name);
+        FrameLayout wrap = new FrameLayout(this);
+        wrap.setPadding(dp(20), dp(8), dp(20), 0);
+        wrap.addView(f);
+        new MaterialAlertDialogBuilder(this).setTitle("名前を変える").setView(wrap)
+                .setNegativeButton("やめる", null)
+                .setPositiveButton("決定", (d, w) -> {
+                    String n = uniqueName(f.getText().toString().trim(), p);
+                    float[] q = quickOf(p);
+                    prefs.edit().remove("q_" + p.name).apply();
+                    p.name = n;
+                    saveQuick(p, q);
+                    if (p == current) prefs.edit().putString("last", n).apply();
+                    PresetStore.saveCustom(this, presets);
+                    refreshThumbRow(); applyPreview();
+                }).show();
+    }
+
+    String uniqueName(String n, Preset self) {
+        if (n.isEmpty()) n = "マイプリセット";
+        String base = n;
+        for (int i = 2; ; i++) {
+            boolean clash = false;
+            for (Preset q : presets) if (q != self && q.name.equals(n)) { clash = true; break; }
+            if (!clash) return n;
+            n = base + " " + i;
+        }
     }
 
     void confirmDelete(Preset p) {
@@ -250,37 +534,64 @@ public class MainActivity extends AppCompatActivity {
                 .setNegativeButton("やめる", null)
                 .setPositiveButton("削除", (d, w) -> {
                     presets.remove(p);
+                    prefs.edit().remove("q_" + p.name).apply();
                     PresetStore.saveCustom(this, presets);
-                    if (current == p) current = presets.get(0);
-                    refreshChips(); applyPreview(); showHint();
+                    if (current == p) select(presets.get(0)); else refreshThumbRow();
                 }).show();
     }
 
-    void showHint() {
-        String h = PresetStore.hint(current.name);
-        status.setText(h != null ? h : "プリセットを選んで撮影 · 画面長押しで加工前");
+    // ---------- かんたん調整 ----------
+
+    void refreshQuick() {
+        quickTabs.removeAllViews();
+        for (int i = 0; i < QUICK_LABELS.length; i++) {
+            int ii = i;
+            Button b = small(QUICK_LABELS[i]);
+            b.setPadding(dp(12), 0, dp(12), 0);
+            b.setBackground(pill(i == quick));
+            b.setOnClickListener(v -> { quick = ii; refreshQuick(); });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(32));
+            lp.setMargins(0, 0, dp(6), 0);
+            quickTabs.addView(b, lp);
+        }
+        float v = quickOf(current)[quick];
+        settingQuick = true;
+        quickBar.setMax(Math.round(QUICK_MAX[quick] - QUICK_MIN[quick]));
+        quickBar.setProgress(Math.round(v - QUICK_MIN[quick]));
+        settingQuick = false;
+        showQuickValue(v);
     }
 
-    void updateTopButtons() {
-        gridBtn.setBackground(pill(overlay.grid()));
-        hdrBtn.setBackground(pill(hdrActive));
-        hdrBtn.setAlpha(hdrWanted ? 1f : 0.55f);
+    void setQuickValue(float v, boolean moveBar) {
+        float[] q = quickOf(current);
+        q[quick] = v;
+        saveQuick(current, q);
+        if (moveBar) { settingQuick = true; quickBar.setProgress(Math.round(v - QUICK_MIN[quick])); settingQuick = false; refreshThumbs(); }
+        showQuickValue(v);
+        queuePreview();
+    }
+
+    void showQuickValue(float v) {
+        int n = Math.round(v);
+        if (quick == 0) quickValue.setText(n + "%");
+        else if (quick == 1) quickValue.setText(String.format(Locale.JAPAN, "%+.1f EV", v / 10f));
+        else quickValue.setText(n > 0 ? "+" + n : String.valueOf(n));
+        quickReset.setVisibility(v == QUICK_DEF[quick] ? View.INVISIBLE : View.VISIBLE);
     }
 
     // ---------- プレビュー ----------
 
     void applyPreview() {
-        Preset p = active();
+        Preset p = effective(active());
         title.setText(p.name);
         int w = preview.getWidth(), h = preview.getHeight();
-        if (w == 0 || h == 0) { DisplayMetrics dm = getResources().getDisplayMetrics(); w = dm.widthPixels; h = dm.heightPixels; }
-        if (comparing) {
-            preview.setRenderEffect(null);
-        } else {
+        if (w == 0 || h == 0) { DisplayMetrics dm = getResources().getDisplayMetrics(); w = dm.widthPixels; h = w * 4 / 3; }
+        if (comparing) preview.setRenderEffect(null);
+        else {
             try { preview.setRenderEffect(PreviewEffects.build(p, w, h)); }
-            catch (Exception e) { preview.setRenderEffect(null); status.setText("プレビュー効果エラー: " + e.getMessage()); }
+            catch (Exception e) { preview.setRenderEffect(null); say("プレビュー効果エラー: " + e.getMessage()); }
         }
-        applyCameraEv();
+        applyCameraEv(p);
     }
 
     void queuePreview() {
@@ -289,12 +600,12 @@ public class MainActivity extends AppCompatActivity {
         ui.postDelayed(() -> { previewQueued = false; applyPreview(); }, 40);
     }
 
-    // ---------- 編集パネル ----------
+    // ---------- 詳しい調整 ----------
 
     void openEditor() {
-        editing = current.copy(current.builtin ? current.name + " Custom" : current.name);
+        editing = current.copy(current.builtin ? current.name + " カスタム" : current.name);
         nameField.setText(editing.name);
-        controls.setVisibility(View.GONE);
+        bottom.setVisibility(View.GONE);
         editor.setVisibility(View.VISIBLE);
         backToCancel.setEnabled(true);
         showTab(tab);
@@ -304,25 +615,34 @@ public class MainActivity extends AppCompatActivity {
     void closeEditor(boolean save) {
         if (editing == null) return;
         if (save) {
-            String n = nameField.getText().toString().trim();
-            if (n.isEmpty()) n = "My Preset";
-            for (Preset p : presets) if (p.builtin && p.name.equals(n)) { n += " Custom"; break; }
-            editing.name = n;
-            editing.builtin = false;
-            int at = -1;
-            for (int i = 0; i < presets.size(); i++) if (!presets.get(i).builtin && presets.get(i).name.equals(n)) at = i;
-            if (at >= 0) presets.set(at, editing); else presets.add(editing);
-            current = editing;
-            prefs.edit().putString("last", n).apply();
+            Preset saved = editing;
+            saved.builtin = false;
+            saved.category = "my";
+            Preset same = null;
+            for (Preset p : presets) if (!p.builtin && p.name.equals(nameField.getText().toString().trim())) same = p;
+            if (same != null) {
+                saved.name = same.name;
+                presets.set(presets.indexOf(same), saved);
+            } else {
+                saved.name = uniqueName(nameField.getText().toString().trim(), null);
+                presets.add(saved);
+            }
+            saveQuick(saved, quickOf(current));
             PresetStore.saveCustom(this, presets);
+            editing = null;
+            cat = "my";
+            current = saved;
+            prefs.edit().putString("last", saved.name).apply();
         }
         editing = null;
+        comparing = false;
         editor.setVisibility(View.GONE);
-        controls.setVisibility(View.VISIBLE);
+        bottom.setVisibility(View.VISIBLE);
         backToCancel.setEnabled(false);
-        refreshChips();
+        refreshCats();
+        refreshQuick();
         applyPreview();
-        if (save) status.setText("「" + current.name + "」を保存しました"); else showHint();
+        if (save) say("「" + current.name + "」を保存しました（マイ）"); else showHint();
     }
 
     void showTab(String t) {
@@ -334,7 +654,7 @@ public class MainActivity extends AppCompatActivity {
             b.setPadding(dp(12), 0, dp(12), 0);
             b.setBackground(pill(id.equals(t)));
             b.setOnClickListener(v -> showTab(id));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(36));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(34));
             lp.setMargins(0, dp(6), dp(6), dp(4));
             tabRow.addView(b, lp);
         }
@@ -344,14 +664,17 @@ public class MainActivity extends AppCompatActivity {
                 LinearLayout dots = new LinearLayout(this);
                 dots.setGravity(Gravity.CENTER);
                 for (int k = 0; k < Param.MIX_IDS.length; k++) {
-                    int kk = k;
+                    int kk = k, col = Param.MIX_COLORS[k];
                     View dot = new View(this);
-                    int col = Param.MIX_COLORS[k];
-                    dot.setBackground(oval(k == mixColor ? col : 0x00000000, col, 3));
+                    GradientDrawable g = new GradientDrawable();
+                    g.setShape(GradientDrawable.OVAL);
+                    g.setColor(k == mixColor ? col : 0x00000000);
+                    g.setStroke(dp(3), col);
+                    dot.setBackground(g);
                     dot.setContentDescription(Param.MIX_LABELS[k]);
                     dot.setOnClickListener(v -> { mixColor = kk; showTab("mixer"); });
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(32), dp(32));
-                    lp.setMargins(dp(5), dp(6), dp(5), dp(6));
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(30), dp(30));
+                    lp.setMargins(dp(5), dp(6), dp(5), dp(2));
                     dots.addView(dot, lp);
                 }
                 editorBody.addView(dots);
@@ -368,8 +691,8 @@ public class MainActivity extends AppCompatActivity {
                     Button b = small(Param.ZONE_LABELS[z]);
                     b.setBackground(pill(z == zone));
                     b.setOnClickListener(v -> { zone = zz; showTab("grade"); });
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(34), 1);
-                    lp.setMargins(dp(3), dp(4), dp(3), dp(4));
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(32), 1);
+                    lp.setMargins(dp(3), dp(4), dp(3), dp(2));
                     zones.addView(b, lp);
                 }
                 editorBody.addView(zones);
@@ -384,16 +707,12 @@ public class MainActivity extends AppCompatActivity {
             default:
                 for (Param d : Param.group(t)) addSlider(d, d.label);
         }
-        if (t.equals("camera")) note("空を白飛びさせないには −0.3〜−0.7 EV がおすすめ。この値はプレビューにもそのまま反映され、プリセットごとに保存されます。\n画面タップ＝そこにピントと明るさを合わせる（空をタップすると空が濃くなる）。HDR は対応端末のみ。");
-        if (t.equals("effect")) note("光のにじみ＝明るい所がふわっと光る。周辺光量をマイナスにすると四隅が白く明るくなる（Aero っぽい）。明瞭度は保存画像にだけ効きます。");
-        note("項目名を長押しで初期値に戻す · 画面長押しで加工前と比較");
+        if (t.equals("camera")) note("空を白飛びさせないには −0.3〜−0.7 EV がおすすめ。この値はプリセットに保存され、プレビューにもそのまま反映されます。");
+        if (t.equals("effect")) note("光のにじみ＝明るい所がふわっと光る。周辺光量をマイナスにすると四隅が白くなる。明瞭度は保存した写真にだけ効きます。");
     }
 
     void note(String s) {
-        TextView n = new TextView(this);
-        n.setText(s);
-        n.setTextSize(12);
-        n.setTextColor(0x99D8E8F2);
+        TextView n = label(s, 12, 0x99D8E8F2);
         n.setPadding(dp(4), dp(10), dp(4), dp(4));
         editorBody.addView(n);
     }
@@ -401,17 +720,17 @@ public class MainActivity extends AppCompatActivity {
     void addSlider(Param d, String label) {
         int i = Param.idx(d.id);
         LinearLayout head = new LinearLayout(this);
-        head.setPadding(dp(4), dp(8), dp(4), 0);
-        TextView name = new TextView(this);
-        name.setText(label);
-        name.setTextColor(0xFFE8F1F7);
-        name.setTextSize(14);
-        head.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView val = new TextView(this);
-        val.setTextColor(0xFFB3E5FC);
-        val.setTextSize(14);
-        val.setText(format(d, editing.v[i]));
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(dp(4), dp(6), dp(4), 0);
+        head.addView(label(label, 14, TEXT), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView val = label(format(d, editing.v[i]), 14, 0xFFB3E5FC);
         head.addView(val);
+        Button reset = small("↺");
+        reset.setContentDescription("初期値に戻す");
+        LinearLayout.LayoutParams rp = new LinearLayout.LayoutParams(dp(34), dp(26));
+        rp.setMargins(dp(8), 0, 0, 0);
+        head.addView(reset, rp);
+        reset.setVisibility(editing.v[i] == d.def ? View.INVISIBLE : View.VISIBLE);
         editorBody.addView(head);
         SeekBar bar = new SeekBar(this);
         bar.setMax(Math.round(d.max - d.min));
@@ -427,13 +746,14 @@ public class MainActivity extends AppCompatActivity {
                 if (editing == null) return;
                 editing.v[i] = d.min + n;
                 val.setText(format(d, editing.v[i]));
+                reset.setVisibility(editing.v[i] == d.def ? View.INVISIBLE : View.VISIBLE);
                 queuePreview();
             }
             @Override public void onStartTrackingTouch(SeekBar s) {}
             @Override public void onStopTrackingTouch(SeekBar s) {}
         });
-        name.setOnLongClickListener(v -> { bar.setProgress(Math.round(d.def - d.min)); return true; });
-        editorBody.addView(bar, new LinearLayout.LayoutParams(-1, dp(36)));
+        reset.setOnClickListener(v -> bar.setProgress(Math.round(d.def - d.min)));
+        editorBody.addView(bar, new LinearLayout.LayoutParams(-1, dp(34)));
     }
 
     String format(Param d, float v) {
@@ -442,6 +762,23 @@ public class MainActivity extends AppCompatActivity {
         if (d.id.endsWith("_hue") && d.group.equals("grade")) return Math.round(v) + "°";
         int n = Math.round(v);
         return d.min < 0 && n > 0 ? "+" + n : String.valueOf(n);
+    }
+
+    // ---------- 設定 ----------
+
+    void openSettings() {
+        String[] items = {"HDR（明るい空と影を両方残す・対応機種のみ）", "三分割グリッド", "原本も一緒に保存", "音量ボタンでシャッター"};
+        boolean[] on = {hdrWanted, overlay.grid(), saveOriginal, volumeShutter};
+        new MaterialAlertDialogBuilder(this).setTitle("設定")
+                .setMultiChoiceItems(items, on, (d, w, c) -> {
+                    if (w == 0) { hdrWanted = c; prefs.edit().putBoolean("hdr", c).apply(); bindCamera(); }
+                    else if (w == 1) { overlay.setGrid(c); prefs.edit().putBoolean("grid", c).apply(); }
+                    else if (w == 2) { saveOriginal = c; prefs.edit().putBoolean("original", c).apply(); }
+                    else { volumeShutter = c; prefs.edit().putBoolean("volume", c).apply(); }
+                })
+                .setNeutralButton("写真を選んで加工", (d, w) -> photoPicker.launch("image/*"))
+                .setPositiveButton("閉じる", null)
+                .show();
     }
 
     // ---------- カメラ ----------
@@ -456,17 +793,17 @@ public class MainActivity extends AppCompatActivity {
                     try { extensions = ef.get(); } catch (Exception ignored) {}
                     bindCamera();
                 }, ContextCompat.getMainExecutor(this));
-            } catch (Exception e) { status.setText("カメラ開始エラー: " + e.getMessage()); }
+            } catch (Exception e) { say("カメラ開始エラー: " + e.getMessage()); }
         }, ContextCompat.getMainExecutor(this));
     }
 
     void bindCamera() {
-        if (provider == null) { updateTopButtons(); return; }
-        CameraSelector sel = CameraSelector.DEFAULT_BACK_CAMERA;
+        if (provider == null) return;
+        CameraSelector base = back ? CameraSelector.DEFAULT_BACK_CAMERA : CameraSelector.DEFAULT_FRONT_CAMERA, sel = base;
         boolean hdr = false, hdrMissing = false;
         try {
             if (hdrWanted && extensions != null) {
-                if (extensions.isExtensionAvailable(sel, ExtensionMode.HDR)) { sel = extensions.getExtensionEnabledCameraSelector(sel, ExtensionMode.HDR); hdr = true; }
+                if (extensions.isExtensionAvailable(base, ExtensionMode.HDR)) { sel = extensions.getExtensionEnabledCameraSelector(base, ExtensionMode.HDR); hdr = true; }
                 else hdrMissing = true;
             }
         } catch (Exception ignored) {}
@@ -477,22 +814,20 @@ public class MainActivity extends AppCompatActivity {
         try {
             camera = provider.bindToLifecycle(this, sel, p, capture);
         } catch (Exception e) {
-            if (!hdr) { status.setText("カメラ開始エラー: " + e.getMessage()); return; }
+            if (!hdr) { say("カメラ開始エラー: " + e.getMessage()); return; }
             hdr = false; hdrMissing = true;
-            try { provider.unbindAll(); camera = provider.bindToLifecycle(this, CameraSelector.DEFAULT_BACK_CAMERA, p, capture); }
-            catch (Exception e2) { status.setText("カメラ開始エラー: " + e2.getMessage()); return; }
+            try { provider.unbindAll(); camera = provider.bindToLifecycle(this, base, p, capture); }
+            catch (Exception e2) { say("カメラ開始エラー: " + e2.getMessage()); return; }
         }
         hdrActive = hdr;
         appliedEv = Float.NaN;
-        applyCameraEv();
-        updateTopButtons();
-        if (hdrMissing) status.setText("この端末は HDR 撮影に対応していません（通常撮影で続けます）");
-        else if (hdrWanted) status.setText("HDR オン：明るい空と影を両方残しやすい");
+        applyCameraEv(effective(active()));
+        if (hdrWanted && hdrMissing) say("この機種は HDR 撮影に対応していません（通常撮影で続けます）");
     }
 
-    void applyCameraEv() {
+    void applyCameraEv(Preset p) {
         if (camera == null) return;
-        float ev = active().get("camera_ev") / 10f;
+        float ev = p.get("camera_ev") / 10f;
         if (ev == appliedEv) return;
         try {
             ExposureState es = camera.getCameraInfo().getExposureState();
@@ -515,53 +850,97 @@ public class MainActivity extends AppCompatActivity {
         } catch (Exception ignored) {}
     }
 
+    @Override public boolean onKeyDown(int code, KeyEvent e) {
+        if (volumeShutter && (code == KeyEvent.KEYCODE_VOLUME_DOWN || code == KeyEvent.KEYCODE_VOLUME_UP) && editor.getVisibility() != View.VISIBLE) {
+            if (e.getRepeatCount() == 0) shoot();
+            return true;
+        }
+        return super.onKeyDown(code, e);
+    }
+
+    void setBusy(boolean b) {
+        busy = b;
+        shutter.setEnabled(!b);
+        shutter.setAlpha(b ? 0.45f : 1f);
+    }
+
     void shoot() {
-        if (capture == null) return;
-        Preset chosen = active().copy(active().name);
+        if (capture == null) { say("カメラの準備中です"); return; }
+        if (busy) return;
+        setBusy(true);
+        Preset chosen = effective(active());
         long seed = grainSeed;
-        status.setText("撮影・2枚を処理中…");
+        boolean keepOriginal = saveOriginal;
+        flash.setAlpha(0.8f);
+        flash.animate().alpha(0).setDuration(300).start();
+        status.setText("保存中…");
         File tmp = new File(getCacheDir(), "capture.jpg");
         capture.takePicture(new ImageCapture.OutputFileOptions.Builder(tmp).build(), io, new ImageCapture.OnImageSavedCallback() {
-            @Override public void onError(ImageCaptureException e) { runOnUiThread(() -> status.setText("撮影失敗: " + e.getMessage())); }
+            @Override public void onError(ImageCaptureException e) { runOnUiThread(() -> { setBusy(false); say("撮影失敗: " + e.getMessage()); }); }
             @Override public void onImageSaved(ImageCapture.OutputFileResults r) {
                 try {
                     String stamp = stamp();
-                    saveFile(tmp, "DC_" + stamp + "_ORIGINAL.jpg");
+                    if (keepOriginal) saveFile(tmp, "DC_" + stamp + "_ORIGINAL.jpg");
                     Bitmap fx = PhotoProcessor.apply(oriented(tmp), chosen, seed);
-                    save(fx, "DC_" + stamp + "_" + safe(chosen.name) + ".jpg");
+                    Uri u = save(fx, "DC_" + stamp + "_" + safe(chosen.name) + ".jpg");
+                    Bitmap th = Thumbs.square(fx, 160);
                     tmp.delete();
-                    runOnUiThread(() -> { status.setText("保存しました：原本＋「" + chosen.name + "」"); grainSeed = System.nanoTime(); });
-                } catch (Throwable e) { runOnUiThread(() -> status.setText("保存失敗: " + e.getMessage())); }
+                    runOnUiThread(() -> { setBusy(false); setLast(u, th); grainSeed = System.nanoTime(); say(keepOriginal ? "保存しました（原本＋加工版）" : "保存しました"); });
+                } catch (Throwable e) { runOnUiThread(() -> { setBusy(false); say("保存失敗: " + e.getMessage()); }); }
             }
         });
     }
 
-    // ---------- 既存写真 ----------
+    // ---------- 既存写真・最後の写真 ----------
 
     void processExisting(Uri uri) {
-        Preset chosen = active().copy(active().name);
+        Preset chosen = effective(active());
         long seed = grainSeed;
+        setBusy(true);
         status.setText("写真を「" + chosen.name + "」で加工中…");
         io.execute(() -> {
             try {
                 Bitmap fx = PhotoProcessor.apply(oriented(uri), chosen, seed);
-                save(fx, "DC_" + stamp() + "_IMPORT_" + safe(chosen.name) + ".jpg");
-                runOnUiThread(() -> status.setText("加工版を保存しました（Pictures/DreamCamera）"));
-            } catch (Throwable e) { runOnUiThread(() -> status.setText("写真の加工失敗: " + e.getMessage())); }
+                Uri u = save(fx, "DC_" + stamp() + "_IMPORT_" + safe(chosen.name) + ".jpg");
+                Bitmap th = Thumbs.square(fx, 160);
+                runOnUiThread(() -> { setBusy(false); setLast(u, th); say("加工版を保存しました（左下から見られます）"); });
+            } catch (Throwable e) { runOnUiThread(() -> { setBusy(false); say("写真の加工失敗: " + e.getMessage()); }); }
         });
     }
 
-    boolean handleShare(Intent intent) {
+    void setLast(Uri u, Bitmap th) {
+        lastUri = u;
+        prefs.edit().putString("lastUri", u.toString()).apply();
+        lastThumb.setImageBitmap(th);
+    }
+
+    void loadLastThumb() {
+        if (lastUri == null) return;
+        Uri u = lastUri;
+        io.execute(() -> {
+            try {
+                Bitmap b = getContentResolver().loadThumbnail(u, new Size(160, 160), null);
+                runOnUiThread(() -> lastThumb.setImageBitmap(b));
+            } catch (Exception e) { runOnUiThread(() -> lastUri = null); }
+        });
+    }
+
+    void openLast() {
+        if (lastUri == null) { say("まだ写真がありません"); return; }
+        try { startActivity(new Intent(Intent.ACTION_VIEW).setDataAndType(lastUri, "image/jpeg").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)); }
+        catch (Exception e) { say("写真を開けるアプリがありません"); }
+    }
+
+    void setShared(Uri u) {
+        pendingShared = u;
+        shareBar.setVisibility(u != null ? View.VISIBLE : View.GONE);
+    }
+
+    void handleShare(Intent intent) {
         if (Intent.ACTION_SEND.equals(intent.getAction()) && intent.getType() != null && intent.getType().startsWith("image/")) {
             Uri u = Build.VERSION.SDK_INT >= 33 ? intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri.class) : (Uri) intent.getParcelableExtra(Intent.EXTRA_STREAM);
-            if (u != null) {
-                pendingSharedUri = u;
-                gallery.setText("✓\n共有写真を加工");
-                status.setText("共有写真を受信：プリセットを選んで左下を押す");
-                return true;
-            }
+            if (u != null) { setShared(u); say("色を選んで「この色で加工」を押してください"); }
         }
-        return false;
     }
 
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); handleShare(intent); }
@@ -626,10 +1005,11 @@ public class MainActivity extends AppCompatActivity {
         getContentResolver().update(u, v, null, null);
     }
 
-    void save(Bitmap b, String name) throws Exception {
+    Uri save(Bitmap b, String name) throws Exception {
         Uri u = newImage(name);
         try (OutputStream o = getContentResolver().openOutputStream(u)) { b.compress(Bitmap.CompressFormat.JPEG, 95, o); }
         publish(u);
+        return u;
     }
 
     /** 原本はカメラの JPEG をそのままコピー（再圧縮しない・Exif も残る）。 */
@@ -646,5 +1026,5 @@ public class MainActivity extends AppCompatActivity {
 
     static String safe(String s) { return s.replaceAll("[^a-zA-Z0-9ぁ-んァ-ン一-龯_-]", "_"); }
 
-    @Override protected void onDestroy() { super.onDestroy(); io.shutdown(); }
+    @Override protected void onDestroy() { super.onDestroy(); io.shutdown(); thumbExec.shutdown(); }
 }

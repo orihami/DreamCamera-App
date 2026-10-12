@@ -55,7 +55,7 @@ public class PresetStore {
         a.add(Preset.legacy("Blue Hour", -3, 10, -30, 6, -10, 22, 12, 5, 12, 24, 18, 0, -8, -8, 2, 14));
         a.add(Preset.legacy("Pastel Haze", 12, -28, 4, 10, -12, 18, 35, -40, -25, 28, 8, 10, 5, 8, 0, 8));
         a.add(Preset.legacy("Mono Mist", 5, 16, -4, 0, -100, 0, 18, -12, -6, 46, 26, 5));
-        for (Preset p : a) p.builtin = true;
+        for (int i = 0; i < a.size(); i++) { a.get(i).builtin = true; a.get(i).category = i < 5 ? "aero" : "film"; }
         return a;
     }
 
