@@ -6,11 +6,12 @@ import android.os.SystemClock;
 import android.view.View;
 import java.util.Locale;
 
-/** プレビューの上に重ねる表示：三分割グリッド・フォーカス位置・ズーム倍率。 */
+/** プレビューの上に重ねる表示：コメディアン（バナナ・テープ）・三分割グリッド・フォーカス位置・ズーム倍率。 */
 final class OverlayView extends View {
     private boolean grid;
     private float fx = -1, fy, zoom;
     private long focusAt, zoomAt;
+    Comedian.State comedian;
     private final Paint line = new Paint(Paint.ANTI_ALIAS_FLAG), ring = new Paint(Paint.ANTI_ALIAS_FLAG), text = new Paint(Paint.ANTI_ALIAS_FLAG), pill = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     OverlayView(Context c) {
@@ -48,6 +49,7 @@ final class OverlayView extends View {
         int w = getWidth(), h = getHeight();
         float d = getResources().getDisplayMetrics().density;
         long now = SystemClock.uptimeMillis();
+        if (comedian != null) Comedian.draw(c, comedian, w, h, false);
         if (grid) for (int i = 1; i < 3; i++) {
             c.drawLine(w * i / 3f, 0, w * i / 3f, h, line);
             c.drawLine(0, h * i / 3f, w, h * i / 3f, line);
