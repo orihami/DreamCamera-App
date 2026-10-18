@@ -25,6 +25,7 @@ Android 12+ のプリセットカメラ。撮影すると原本と加工版を `
 2. `docs/releases/<版>.md` に変更点を書く（日本語・ユーザー向け。入れ方も一言）
 3. main に push → Actions が通るのを確認
 4. タグ `<版>`（v を付けない。例 `0.6.0`）を push → Actions が Release を作る
+   - クラウド側からタグを push できない（403）時は、Actions の build を手動実行（`release` に印、ブランチ main）。versionName をタグにして同じように Release を作る
 5. ユーザーのラズパイの納品サービスが `make/Android_app_Folder/DreamCamera/<版>/` に自動で届ける
 
 注意：

@@ -8,7 +8,13 @@ on:
     branches: [main]
     tags: ['[0-9]+.[0-9]+.[0-9]+']
   pull_request:
+  # 手動実行で「release」に印を付けると、main の versionName をタグにして Release を作る（タグを push できない時用）
   workflow_dispatch:
+    inputs:
+      release:
+        description: 'Release を作る（タグは versionName）'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -17,6 +23,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
+      # Release を作る実行か（タグの push、または main で release に印を付けた手動実行）
+      RELEASE: ${{ github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.release && github.ref == 'refs/heads/main') }}
       # 今スマホに入っている版と同じ署名鍵の証明書（公開情報）。違う鍵だと上書き更新できない
       EXPECTED_CERT_SHA256: 2566f8b2783a10e91a1de386cc5071266fcc24b0a92c4d0e5a3ba19c894de815
     steps:
@@ -37,7 +45,7 @@ jobs:
           KEYSTORE: ${{ secrets.DEBUG_KEYSTORE_B64 }}
         run: |
           if [ -z "$KEYSTORE" ]; then
-            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then echo "::error::Secret DEBUG_KEYSTORE_B64 がありません（リリースには必須）"; exit 1; fi
+            if [ "$RELEASE" = "true" ]; then echo "::error::Secret DEBUG_KEYSTORE_B64 がありません（リリースには必須）"; exit 1; fi
             echo "::warning::Secret が無いので仮の鍵で署名します（スマホに上書きできません）"; exit 0
           fi
           echo "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/debug.keystore"
@@ -58,7 +66,7 @@ jobs:
           CERT=$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "$APK" | grep -m1 'SHA-256 digest' | awk '{print $NF}')
           echo "cert=$CERT"
           if [ "$CERT" != "$EXPECTED_CERT_SHA256" ]; then
-            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then echo "::error::署名鍵が違います"; exit 1; fi
+            if [ "$RELEASE" = "true" ]; then echo "::error::署名鍵が違います"; exit 1; fi
             echo "::warning::署名鍵がいつもと違います"
           fi
           cp "$APK" "DreamCamera-$NAME-debug.apk"
@@ -69,11 +77,12 @@ jobs:
           path: DreamCamera-*.apk
 
       - name: Release
-        if: github.ref_type == 'tag'
+        if: env.RELEASE == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          NOTES="docs/releases/${GITHUB_REF_NAME}.md"
+          TAG="${{ steps.check.outputs.name }}"
+          NOTES="docs/releases/${TAG}.md"
           [ -f "$NOTES" ] || { echo "::error::$NOTES がありません"; exit 1; }
-          gh release create "${GITHUB_REF_NAME}" "DreamCamera-${GITHUB_REF_NAME}-debug.apk" \
-            --title "Dream Camera ${GITHUB_REF_NAME}" --notes-file "$NOTES"
+          gh release create "$TAG" "DreamCamera-${TAG}-debug.apk" --target "$GITHUB_SHA" \
+            --title "Dream Camera ${TAG}" --notes-file "$NOTES"
