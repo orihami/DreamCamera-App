@@ -27,14 +27,8 @@ import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
 import androidx.core.view.WindowCompat;
 import androidx.exifinterface.media.ExifInterface;
-import com.google.android.gms.tasks.Tasks;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.common.util.concurrent.ListenableFuture;
-import com.google.mlkit.vision.common.InputImage;
-import com.google.mlkit.vision.objects.DetectedObject;
-import com.google.mlkit.vision.objects.ObjectDetection;
-import com.google.mlkit.vision.objects.ObjectDetector;
-import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions;
 import java.io.*;
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -51,28 +45,25 @@ public class MainActivity extends AppCompatActivity {
     static final int BG = 0xFF0A0D12, TEXT = 0xFFE8F1F7, SUB = 0xFF9FB3C2;
 
     PreviewView preview; OverlayView overlay; View flash;
-    LinearLayout bottom, editor, editorBody, tabRow, catRow, thumbRow, quickTabs, shareBar, modeRow;
+    LinearLayout bottom, editor, editorBody, tabRow, catRow, thumbRow, quickTabs, shareBar;
     TextView title, status, quickValue; Button shutter, quickReset; SeekBar quickBar; ImageView lastThumb; EditText nameField;
     ImageCapture capture; Camera camera; ProcessCameraProvider provider; ExtensionsManager extensions;
     ArrayList<Preset> presets; Preset current, editing;
     final Map<Preset, ImageView> thumbViews = new LinkedHashMap<>();
-    final ExecutorService io = Executors.newSingleThreadExecutor(), thumbExec = Executors.newSingleThreadExecutor(), detectExec = Executors.newSingleThreadExecutor();
+    final ExecutorService io = Executors.newSingleThreadExecutor(), thumbExec = Executors.newSingleThreadExecutor();
     final Handler ui = new Handler(Looper.getMainLooper());
     SharedPreferences prefs;
     OnBackPressedCallback backToCancel;
     String cat = "aero", tab = "light";
     int quick = 0, mixColor = 4, zone = 0;
-    boolean back, hdrWanted, hdrActive, saveOriginal, volumeShutter, comparing, previewQueued, busy, thumbBusy, resumed, settingQuick, detecting;
+    boolean back, hdrWanted, hdrActive, saveOriginal, volumeShutter, comparing, previewQueued, busy, thumbBusy, resumed, settingQuick;
     float appliedEv = Float.NaN;
     long grainSeed = System.nanoTime();
     Uri pendingShared, lastUri;
     Bitmap sample;
-    final Comedian.State com = new Comedian.State();
-    ObjectDetector detector;
 
     final Runnable thumbTick = new Runnable() { @Override public void run() { refreshThumbs(); if (resumed) ui.postDelayed(this, 2500); } };
     final Runnable hintBack = this::showHint;
-    final Runnable detectTick = new Runnable() { @Override public void run() { detectCenter(); if (resumed && com.mode == Comedian.TAPE) ui.postDelayed(this, 400); } };
 
     ActivityResultLauncher<String> permission = registerForActivityResult(new ActivityResultContracts.RequestPermission(), ok -> { if (ok) startCamera(); else say("カメラ権限が必要です（設定から許可してください）"); });
     ActivityResultLauncher<String> photoPicker = registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> { if (uri != null) processExisting(uri); });
@@ -90,13 +81,7 @@ public class MainActivity extends AppCompatActivity {
         presets = PresetStore.load(this);
         current = find(prefs.getString("last", PresetStore.DEFAULT_NAME));
         cat = current.category;
-        com.mode = prefs.getInt("comedian", Comedian.OFF);
-        com.bx = prefs.getFloat("banana_x", 0.5f);
-        com.by = prefs.getFloat("banana_y", 0.5f);
-        com.blen = prefs.getFloat("banana_len", 0.5f);
         buildUi();
-        overlay.comedian = com;
-        refreshModes();
         overlay.setGrid(prefs.getBoolean("grid", false));
         refreshCats();
         refreshQuick();
@@ -111,9 +96,9 @@ public class MainActivity extends AppCompatActivity {
         else if (pendingShared == null) permission.launch(Manifest.permission.CAMERA);
     }
 
-    @Override protected void onResume() { super.onResume(); resumed = true; ui.removeCallbacks(thumbTick); ui.post(thumbTick); ui.removeCallbacks(detectTick); ui.post(detectTick); }
+    @Override protected void onResume() { super.onResume(); resumed = true; ui.removeCallbacks(thumbTick); ui.post(thumbTick); }
 
-    @Override protected void onPause() { super.onPause(); resumed = false; ui.removeCallbacks(thumbTick); ui.removeCallbacks(detectTick); }
+    @Override protected void onPause() { super.onPause(); resumed = false; ui.removeCallbacks(thumbTick); }
 
     Preset find(String name) {
         for (Preset p : presets) if (p.name.equals(name)) return p;
@@ -194,9 +179,6 @@ public class MainActivity extends AppCompatActivity {
 
         bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.VERTICAL);
-        modeRow = new LinearLayout(this);
-        modeRow.setPadding(0, dp(8), 0, 0);
-        bottom.addView(modeRow);
         shareBar = new LinearLayout(this);
         shareBar.setGravity(Gravity.CENTER_VERTICAL);
         shareBar.setVisibility(View.GONE);
@@ -339,11 +321,6 @@ public class MainActivity extends AppCompatActivity {
     void setupGestures() {
         ScaleGestureDetector sd = new ScaleGestureDetector(this, new ScaleGestureDetector.SimpleOnScaleGestureListener() {
             @Override public boolean onScale(ScaleGestureDetector d) {
-                if (com.mode == Comedian.BANANA) {
-                    com.blen = Math.max(0.15f, Math.min(1.2f, com.blen * d.getScaleFactor()));
-                    overlay.invalidate();
-                    return true;
-                }
                 if (camera == null) return false;
                 ZoomState z = camera.getCameraInfo().getZoomState().getValue();
                 if (z == null) return false;
@@ -355,18 +332,7 @@ public class MainActivity extends AppCompatActivity {
         });
         GestureDetector gd = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override public boolean onDown(MotionEvent e) { return true; }
-            @Override public boolean onSingleTapUp(MotionEvent e) {
-                if (com.mode == Comedian.TAPE) { com.tx = e.getX() / overlay.getWidth(); com.ty = e.getY() / overlay.getHeight(); detectCenter(); }
-                focusAt(e.getX(), e.getY());
-                return true;
-            }
-            @Override public boolean onScroll(MotionEvent e1, MotionEvent e2, float dx, float dy) {
-                if (com.mode != Comedian.BANANA || sd.isInProgress()) return false;
-                com.bx = Math.max(0f, Math.min(1f, com.bx - dx / overlay.getWidth()));
-                com.by = Math.max(0f, Math.min(1f, com.by - dy / overlay.getHeight()));
-                overlay.invalidate();
-                return true;
-            }
+            @Override public boolean onSingleTapUp(MotionEvent e) { focusAt(e.getX(), e.getY()); return true; }
             @Override public void onLongPress(MotionEvent e) {
                 if (sd.isInProgress()) return;
                 comparing = true; applyPreview(); status.setText("加工前を表示中（指を離すと戻る）");
@@ -377,7 +343,6 @@ public class MainActivity extends AppCompatActivity {
             if (e.getPointerCount() == 1) gd.onTouchEvent(e);
             int a = e.getActionMasked();
             if ((a == MotionEvent.ACTION_UP || a == MotionEvent.ACTION_CANCEL) && comparing) { comparing = false; applyPreview(); showHint(); }
-            if (a == MotionEvent.ACTION_UP && com.mode == Comedian.BANANA) prefs.edit().putFloat("banana_x", com.bx).putFloat("banana_y", com.by).putFloat("banana_len", com.blen).apply();
             return true;
         });
     }
@@ -442,84 +407,9 @@ public class MainActivity extends AppCompatActivity {
 
     void showHint() {
         ui.removeCallbacks(hintBack);
-        if (com.mode == Comedian.BANANA) { status.setText("バナナはドラッグで移動 · 2本指で大きさ"); return; }
-        if (com.mode == Comedian.TAPE) { status.setText("真ん中の物にテープを貼ります · タップで貼る物を選ぶ"); return; }
         String h = PresetStore.hint(current.name);
         status.setText(h != null ? h : "タップでピント · 2本指でズーム · 長押しで加工前");
     }
-
-    // ---------- コメディアン（バナナ・テープ） ----------
-
-    void refreshModes() {
-        modeRow.removeAllViews();
-        for (int i = 0; i < Comedian.LABELS.length; i++) {
-            int m = i;
-            Button b = small(Comedian.LABELS[i]);
-            b.setPadding(dp(12), 0, dp(12), 0);
-            b.setBackground(pill(i == com.mode));
-            b.setOnClickListener(v -> setMode(m));
-            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(32));
-            lp.setMargins(0, 0, dp(6), 0);
-            modeRow.addView(b, lp);
-        }
-    }
-
-    void setMode(int m) {
-        com.mode = m;
-        prefs.edit().putInt("comedian", m).apply();
-        if (m == Comedian.TAPE) { com.tx = 0.5f; com.ty = 0.5f; ui.removeCallbacks(detectTick); ui.post(detectTick); }
-        refreshModes();
-        overlay.invalidate();
-        showHint();
-    }
-
-    ObjectDetector detector() {
-        if (detector == null) detector = ObjectDetection.getClient(new ObjectDetectorOptions.Builder()
-                .setDetectorMode(ObjectDetectorOptions.SINGLE_IMAGE_MODE).enableMultipleObjects().build());
-        return detector;
-    }
-
-    /** 物の範囲を探す（割合で返す）。見つからなければ target の周りの四角。重いので UI スレッド以外で呼ぶ。 */
-    RectF findThing(Bitmap src, float tx, float ty) throws Exception {
-        float k = 480f / Math.max(src.getWidth(), src.getHeight());
-        Bitmap s = k < 1 ? Bitmap.createScaledBitmap(src, Math.max(1, Math.round(src.getWidth() * k)), Math.max(1, Math.round(src.getHeight() * k)), true) : src;
-        List<DetectedObject> found = Tasks.await(detector().process(InputImage.fromBitmap(s, 0)));
-        List<Rect> boxes = new ArrayList<>();
-        for (DetectedObject o : found) boxes.add(o.getBoundingBox());
-        return Comedian.pick(boxes, s.getWidth(), s.getHeight(), tx, ty);
-    }
-
-    void detectCenter() {
-        if (com.mode != Comedian.TAPE || detecting || editor.getVisibility() == View.VISIBLE) return;
-        Bitmap b = null;
-        try { b = preview.getBitmap(); } catch (Exception ignored) {}
-        if (b == null) return;
-        Bitmap src = b;
-        float tx = com.tx, ty = com.ty;
-        detecting = true;
-        detectExec.execute(() -> {
-            RectF r = null;
-            try { r = findThing(src, tx, ty); } catch (Exception ignored) {}
-            RectF found = r;
-            runOnUiThread(() -> {
-                detecting = false;
-                if (found == null) return;
-                // 揺れないように少しずつ寄せる
-                float a = 0.5f;
-                com.box.set(com.box.left + (found.left - com.box.left) * a, com.box.top + (found.top - com.box.top) * a,
-                        com.box.right + (found.right - com.box.right) * a, com.box.bottom + (found.bottom - com.box.bottom) * a);
-                overlay.invalidate();
-            });
-        });
-    }
-
-    /** 加工版に描き込む（色の加工の前に描くので、バナナにも同じ色が乗る）。 */
-    static void stick(Bitmap b, Comedian.State s, boolean mirror) {
-        if (s.mode == Comedian.OFF) return;
-        Comedian.draw(new Canvas(b), s, b.getWidth(), b.getHeight(), mirror);
-    }
-
-    static String suffix(Comedian.State s) { return s.mode == Comedian.BANANA ? "_BANANA" : s.mode == Comedian.TAPE ? "_TAPE" : ""; }
 
     // ---------- プリセット一覧 ----------
 
@@ -980,8 +870,7 @@ public class MainActivity extends AppCompatActivity {
         setBusy(true);
         Preset chosen = effective(active());
         long seed = grainSeed;
-        boolean keepOriginal = saveOriginal, mirror = !back;
-        Comedian.State art = com.copy();
+        boolean keepOriginal = saveOriginal;
         flash.setAlpha(0.8f);
         flash.animate().alpha(0).setDuration(300).start();
         status.setText("保存中…");
@@ -992,10 +881,8 @@ public class MainActivity extends AppCompatActivity {
                 try {
                     String stamp = stamp();
                     if (keepOriginal) saveFile(tmp, "DC_" + stamp + "_ORIGINAL.jpg");
-                    Bitmap img = oriented(tmp);
-                    stick(img, art, mirror);
-                    Bitmap fx = PhotoProcessor.apply(img, chosen, seed);
-                    Uri u = save(fx, "DC_" + stamp + "_" + safe(chosen.name) + suffix(art) + ".jpg");
+                    Bitmap fx = PhotoProcessor.apply(oriented(tmp), chosen, seed);
+                    Uri u = save(fx, "DC_" + stamp + "_" + safe(chosen.name) + ".jpg");
                     Bitmap th = Thumbs.square(fx, 160);
                     tmp.delete();
                     runOnUiThread(() -> { setBusy(false); setLast(u, th); grainSeed = System.nanoTime(); say(keepOriginal ? "保存しました（原本＋加工版）" : "保存しました"); });
@@ -1009,16 +896,12 @@ public class MainActivity extends AppCompatActivity {
     void processExisting(Uri uri) {
         Preset chosen = effective(active());
         long seed = grainSeed;
-        Comedian.State art = com.copy();
         setBusy(true);
         status.setText("写真を「" + chosen.name + "」で加工中…");
         io.execute(() -> {
             try {
-                Bitmap img = oriented(uri);
-                if (art.mode == Comedian.TAPE) try { art.box.set(findThing(img, 0.5f, 0.5f)); } catch (Exception ignored) {}
-                stick(img, art, false);
-                Bitmap fx = PhotoProcessor.apply(img, chosen, seed);
-                Uri u = save(fx, "DC_" + stamp() + "_IMPORT_" + safe(chosen.name) + suffix(art) + ".jpg");
+                Bitmap fx = PhotoProcessor.apply(oriented(uri), chosen, seed);
+                Uri u = save(fx, "DC_" + stamp() + "_IMPORT_" + safe(chosen.name) + ".jpg");
                 Bitmap th = Thumbs.square(fx, 160);
                 runOnUiThread(() -> { setBusy(false); setLast(u, th); say("加工版を保存しました（左下から見られます）"); });
             } catch (Throwable e) { runOnUiThread(() -> { setBusy(false); say("写真の加工失敗: " + e.getMessage()); }); }
@@ -1143,5 +1026,5 @@ public class MainActivity extends AppCompatActivity {
 
     static String safe(String s) { return s.replaceAll("[^a-zA-Z0-9ぁ-んァ-ン一-龯_-]", "_"); }
 
-    @Override protected void onDestroy() { super.onDestroy(); io.shutdown(); thumbExec.shutdown(); detectExec.shutdown(); if (detector != null) detector.close(); }
+    @Override protected void onDestroy() { super.onDestroy(); io.shutdown(); thumbExec.shutdown(); }
 }
