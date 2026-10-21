@@ -37,8 +37,8 @@ import java.util.concurrent.*;
 public class MainActivity extends AppCompatActivity {
     static final String[] TABS = {"light", "color", "mixer", "grade", "effect", "camera"};
     static final String[] TAB_LABELS = {"ライト", "カラー", "ミキサー", "グレーディング", "効果", "撮影"};
-    static final String[] CATS = {"aero", "film", "my"};
-    static final String[] CAT_LABELS = {"Aero", "いろいろ", "マイ"};
+    static final String[] CATS = {"aero", "snap", "film", "my"};
+    static final String[] CAT_LABELS = {"Aero", "スナップ", "いろいろ", "マイ"};
     /** メイン画面のかんたん調整：強さ(%)・明るさ(0.1EV)・暖かさ */
     static final String[] QUICK_LABELS = {"強さ", "明るさ", "暖かさ"};
     static final float[] QUICK_MIN = {0, -20, -50}, QUICK_MAX = {100, 20, 50}, QUICK_DEF = {100, 0, 0};

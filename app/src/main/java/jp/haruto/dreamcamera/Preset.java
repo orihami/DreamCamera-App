@@ -9,7 +9,7 @@ public class Preset {
     public String name;
     public final float[] v = new float[Param.ALL.length];
     public boolean builtin;
-    /** aero / film / my */
+    /** aero / snap / film / my */
     public String category = "my";
 
     /** 強さ（0..1）。空間効果にかける。 */

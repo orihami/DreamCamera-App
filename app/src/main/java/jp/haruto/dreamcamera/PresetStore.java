@@ -14,6 +14,12 @@ public class PresetStore {
         HINTS.put("Aqua Glass", "水しぶき・グラス・水槽に。光が当たる側から撮る");
         HINTS.put("Eco Green", "芝生・葉っぱ＋青空。低い位置から見上げて空を入れる");
         HINTS.put("Vista Aurora", "夜景・ネオン・水槽の青緑の光に");
+        HINTS.put("Street Portra", "昼の街と人に。歩きながら気になった瞬間にすぐ押す");
+        HINTS.put("Night Walk", "夜の街灯・看板・駅に。明るい光を少し画面に入れる");
+        HINTS.put("Superia Green", "曇りの日・日陰・住宅街に。少し引いて余白を残す");
+        HINTS.put("Old Days", "なんでもない日常に。ピントや水平は気にしすぎない");
+        HINTS.put("Golden Snap", "夕方の斜めの光に。逆光で人や影を入れる");
+        HINTS.put("Mono Street", "影と光がはっきりした所に。人の形・影を主役に");
     }
 
     public static String hint(String name) { return HINTS.get(name); }
@@ -56,6 +62,45 @@ public class PresetStore {
         a.add(Preset.legacy("Pastel Haze", 12, -28, 4, 10, -12, 18, 35, -40, -25, 28, 8, 10, 5, 8, 0, 8));
         a.add(Preset.legacy("Mono Mist", 5, 16, -4, 0, -100, 0, 18, -12, -6, 46, 26, 5));
         for (int i = 0; i < a.size(); i++) { a.get(i).builtin = true; a.get(i).category = i < 5 ? "aero" : "film"; }
+        for (Preset p : snaps()) { p.builtin = true; p.category = "snap"; a.add(p); }
+        return a;
+    }
+
+    /** ストリートスナップ用：フィルムで撮ったような、少し褪せた色と粒子。 */
+    static List<Preset> snaps() {
+        List<Preset> a = new ArrayList<>();
+        // 暖かい肌色・くすんだ緑・浮いた黒（Portra 400 っぽく）
+        a.add(new Preset("Street Portra").set("exposure", 5).set("contrast", -10).set("highlights", -40).set("shadows", 25).set("whites", -10).set("blacks", 20).set("fade", 18)
+                .set("temp", 12).set("tint", 4).set("vibrance", -5).set("saturation", -8)
+                .set("mix_s_orange", 8).set("mix_l_orange", 8).set("mix_h_green", -20).set("mix_s_green", -25).set("mix_h_blue", -10).set("mix_s_blue", -15)
+                .set("sh_hue", 200).set("sh_sat", 12).set("hl_hue", 40).set("hl_sat", 18)
+                .set("clarity", -5).set("grain", 30).set("vignette", 12).set("camera_ev", -3));
+        // 夜：青い影と暖かい街灯、光がにじむ（タングステンフィルムっぽく）
+        a.add(new Preset("Night Walk").set("contrast", 15).set("highlights", -30).set("shadows", 20).set("blacks", 10).set("fade", 8)
+                .set("temp", -25).set("tint", 6).set("vibrance", 15)
+                .set("mix_s_red", 20).set("mix_h_orange", -10).set("mix_s_aqua", 25).set("mix_h_blue", -15)
+                .set("sh_hue", 195).set("sh_sat", 35).set("hl_hue", 25).set("hl_sat", 20)
+                .set("glow", 40).set("grain", 35).set("vignette", 15).set("camera_ev", -5));
+        // 緑がかった影・あっさりした色（Superia っぽく）
+        a.add(new Preset("Superia Green").set("contrast", 10).set("highlights", -35).set("shadows", 15).set("blacks", 15).set("fade", 15)
+                .set("temp", -5).set("tint", -12).set("vibrance", 10).set("saturation", -5)
+                .set("mix_h_red", 5).set("mix_h_green", 15).set("mix_s_green", 10).set("mix_s_blue", -10)
+                .set("sh_hue", 165).set("sh_sat", 25).set("hl_hue", 55).set("hl_sat", 10)
+                .set("grain", 30).set("camera_ev", -3));
+        // 色あせた昔の写真
+        a.add(new Preset("Old Days").set("exposure", 8).set("contrast", -25).set("highlights", -30).set("shadows", 30).set("whites", -20).set("blacks", 30).set("fade", 35)
+                .set("temp", 18).set("tint", 6).set("vibrance", -10).set("saturation", -25)
+                .set("sh_hue", 220).set("sh_sat", 10).set("hl_hue", 40).set("hl_sat", 25)
+                .set("glow", 20).set("blur", 8).set("grain", 40).set("vignette", 20));
+        // 夕方の金色
+        a.add(new Preset("Golden Snap").set("exposure", 3).set("contrast", 10).set("highlights", -50).set("shadows", 25).set("blacks", 10).set("fade", 10)
+                .set("temp", 30).set("tint", 8).set("vibrance", 20)
+                .set("mix_h_orange", -5).set("mix_s_orange", 15).set("mix_h_blue", -15).set("mix_s_blue", -20)
+                .set("sh_hue", 260).set("sh_sat", 15).set("hl_hue", 35).set("hl_sat", 30)
+                .set("glow", 30).set("grain", 25).set("vignette", 15).set("camera_ev", -5));
+        // 硬めの白黒（Tri-X っぽく）
+        a.add(new Preset("Mono Street").set("contrast", 40).set("highlights", -20).set("shadows", -5).set("whites", 20).set("blacks", -15)
+                .set("saturation", -100).set("clarity", 20).set("grain", 45).set("vignette", 20).set("camera_ev", -3));
         return a;
     }
 

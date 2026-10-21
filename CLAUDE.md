@@ -15,7 +15,7 @@ Android 12+ のプリセットカメラ。撮影すると原本と加工版を `
 - `ColorEngine` … 1画素の色変換。3D LUT（33³）に焼いてプレビュー（AGSL, Android 13+）と保存画像（CPU）で共通に使う
 - `PreviewEffects` … ライブプレビューの RenderEffect
 - `PhotoProcessor` … 保存用フル解像度処理（LUT＋明瞭度・ソフト・光のにじみ・周辺光量・粒子）
-- `Param` / `Preset` / `PresetStore` … 調整項目・プリセット・保存（旧版のキー `legacy` も読む）
+- `Param` / `Preset` / `PresetStore` … 調整項目・プリセット・保存（旧版のキー `legacy` も読む）。カテゴリは aero / snap（0.7.0 のストリートスナップ用、`PresetStore.snaps()`）/ film / my
 - `Thumbs` … 一覧のサムネイル、`OverlayView` … グリッド・フォーカス・ズーム表示
 - UI は XML を使わずコードで組んでいる（`MainActivity`）
 
