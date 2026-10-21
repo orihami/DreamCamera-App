@@ -17,6 +17,7 @@ Android 12+ のプリセットカメラ。撮影すると原本と加工版を `
 - `PhotoProcessor` … 保存用フル解像度処理（LUT＋明瞭度・ソフト・光のにじみ・周辺光量・粒子）
 - `Param` / `Preset` / `PresetStore` … 調整項目・プリセット・保存（旧版のキー `legacy` も読む）。カテゴリは aero / snap（0.7.0 のストリートスナップ用、`PresetStore.snaps()`）/ film / my
 - `Thumbs` … 一覧のサムネイル、`OverlayView` … グリッド・フォーカス・ズーム表示
+- `ProCamera` … PRO 撮影（0.8.0）。AF・WB・SS・ISO・EV・ズームを手動／オート。手動の値は Camera2Interop の CaptureRequestOptions で渡す。WB は Kelvin 直指定ではなく Camera2 のプリセット（電球〜日陰）。PRO 中は HDR 拡張を使わない
 - UI は XML を使わずコードで組んでいる（`MainActivity`）
 
 ## リリースの手順（ユーザーは GitHub の Release から直接ダウンロードする）

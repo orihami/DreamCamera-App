@@ -3,7 +3,7 @@ plugins { id 'com.android.application' }
 android { namespace 'jp.haruto.dreamcamera'; compileSdk 36
     // CI では Secret から復元した鍵を使う（スマホに上書きできる同じ鍵）。ローカルは通常のデバッグ鍵
     signingConfigs { debug { def ks = System.getenv('DC_DEBUG_KEYSTORE'); if (ks) { storeFile file(ks); storePassword 'android'; keyAlias 'androiddebugkey'; keyPassword 'android' } } }
-    defaultConfig { applicationId 'jp.haruto.dreamcamera'; minSdk 31; targetSdk 36; versionCode 10; versionName '0.7.0' }
+    defaultConfig { applicationId 'jp.haruto.dreamcamera'; minSdk 31; targetSdk 36; versionCode 11; versionName '0.8.0' }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
 

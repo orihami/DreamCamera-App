@@ -4,6 +4,10 @@ import android.Manifest;
 import android.content.*;
 import android.content.pm.PackageManager;
 import android.graphics.*;
+import android.hardware.camera2.CameraCaptureSession;
+import android.hardware.camera2.CaptureRequest;
+import android.hardware.camera2.CaptureResult;
+import android.hardware.camera2.TotalCaptureResult;
 import android.graphics.drawable.*;
 import android.net.Uri;
 import android.os.*;
@@ -17,7 +21,11 @@ import android.widget.*;
 import androidx.activity.OnBackPressedCallback;
 import androidx.activity.result.*;
 import androidx.activity.result.contract.ActivityResultContracts;
+import androidx.annotation.OptIn;
 import androidx.appcompat.app.*;
+import androidx.camera.camera2.interop.Camera2CameraControl;
+import androidx.camera.camera2.interop.Camera2Interop;
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop;
 import androidx.camera.core.Camera;
 import androidx.camera.core.*;
 import androidx.camera.extensions.ExtensionMode;
@@ -34,6 +42,7 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.*;
 
+@OptIn(markerClass = ExperimentalCamera2Interop.class)
 public class MainActivity extends AppCompatActivity {
     static final String[] TABS = {"light", "color", "mixer", "grade", "effect", "camera"};
     static final String[] TAB_LABELS = {"ライト", "カラー", "ミキサー", "グレーディング", "効果", "撮影"};
@@ -46,7 +55,8 @@ public class MainActivity extends AppCompatActivity {
 
     PreviewView preview; OverlayView overlay; View flash;
     LinearLayout bottom, editor, editorBody, tabRow, catRow, thumbRow, quickTabs, shareBar;
-    TextView title, status, quickValue; Button shutter, quickReset; SeekBar quickBar; ImageView lastThumb; EditText nameField;
+    TextView title, status, quickValue, proValue; Button shutter, quickReset, proBtn, proAuto; SeekBar quickBar, proBar; ImageView lastThumb; EditText nameField;
+    LinearLayout quickRow, proPanel, proSlider, proChips;
     ImageCapture capture; Camera camera; ProcessCameraProvider provider; ExtensionsManager extensions;
     ArrayList<Preset> presets; Preset current, editing;
     final Map<Preset, ImageView> thumbViews = new LinkedHashMap<>();
@@ -56,7 +66,9 @@ public class MainActivity extends AppCompatActivity {
     OnBackPressedCallback backToCancel;
     String cat = "aero", tab = "light";
     int quick = 0, mixColor = 4, zone = 0;
-    boolean back, hdrWanted, hdrActive, saveOriginal, volumeShutter, comparing, previewQueued, busy, thumbBusy, resumed, settingQuick;
+    boolean back, hdrWanted, hdrActive, saveOriginal, volumeShutter, comparing, previewQueued, busy, thumbBusy, resumed, settingQuick, proOn, settingPro;
+    final ProCamera pro = new ProCamera();
+    int proSel = -1;
     float appliedEv = Float.NaN;
     long grainSeed = System.nanoTime();
     Uri pendingShared, lastUri;
@@ -64,6 +76,8 @@ public class MainActivity extends AppCompatActivity {
 
     final Runnable thumbTick = new Runnable() { @Override public void run() { refreshThumbs(); if (resumed) ui.postDelayed(this, 2500); } };
     final Runnable hintBack = this::showHint;
+    /** オートの今の値（シャッター速度・ISO）をチップに出す。 */
+    final Runnable proTick = new Runnable() { @Override public void run() { if (proOn) { refreshProChips(); ui.postDelayed(this, 500); } } };
 
     ActivityResultLauncher<String> permission = registerForActivityResult(new ActivityResultContracts.RequestPermission(), ok -> { if (ok) startCamera(); else say("カメラ権限が必要です（設定から許可してください）"); });
     ActivityResultLauncher<String> photoPicker = registerForActivityResult(new ActivityResultContracts.GetContent(), uri -> { if (uri != null) processExisting(uri); });
@@ -73,6 +87,7 @@ public class MainActivity extends AppCompatActivity {
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
         prefs = getSharedPreferences("p", 0);
         hdrWanted = prefs.getBoolean("hdr", true);
+        proOn = prefs.getBoolean("pro", false);
         back = prefs.getBoolean("back", true);
         saveOriginal = prefs.getBoolean("original", true);
         volumeShutter = prefs.getBoolean("volume", true);
@@ -85,6 +100,7 @@ public class MainActivity extends AppCompatActivity {
         overlay.setGrid(prefs.getBoolean("grid", false));
         refreshCats();
         refreshQuick();
+        setPro(proOn, false);
         preview.addOnLayoutChangeListener((v, l, t, r, bt, ol, ot, or, ob) -> { if (r - l != or - ol || bt - t != ob - ot) applyPreview(); });
         applyPreview();
         showHint();
@@ -96,9 +112,9 @@ public class MainActivity extends AppCompatActivity {
         else if (pendingShared == null) permission.launch(Manifest.permission.CAMERA);
     }
 
-    @Override protected void onResume() { super.onResume(); resumed = true; ui.removeCallbacks(thumbTick); ui.post(thumbTick); }
+    @Override protected void onResume() { super.onResume(); resumed = true; ui.removeCallbacks(thumbTick); ui.post(thumbTick); ui.removeCallbacks(proTick); ui.post(proTick); }
 
-    @Override protected void onPause() { super.onPause(); resumed = false; ui.removeCallbacks(thumbTick); }
+    @Override protected void onPause() { super.onPause(); resumed = false; ui.removeCallbacks(thumbTick); ui.removeCallbacks(proTick); }
 
     Preset find(String name) {
         for (Preset p : presets) if (p.name.equals(name)) return p;
@@ -153,6 +169,14 @@ public class MainActivity extends AppCompatActivity {
         title.setSingleLine(true);
         title.setEllipsize(TextUtils.TruncateAt.END);
         top.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        proBtn = small("PRO");
+        proBtn.setTextSize(13);
+        proBtn.setTypeface(null, Typeface.BOLD);
+        proBtn.setContentDescription("プロ撮影");
+        proBtn.setOnClickListener(v -> setPro(!proOn, true));
+        LinearLayout.LayoutParams pbp = new LinearLayout.LayoutParams(dp(56), dp(36));
+        pbp.setMargins(0, 0, dp(6), 0);
+        top.addView(proBtn, pbp);
         Button flip = small("⟲");
         flip.setTextSize(18);
         flip.setContentDescription("カメラ切替");
@@ -205,7 +229,7 @@ public class MainActivity extends AppCompatActivity {
         ts.addView(thumbRow);
         bottom.addView(ts, new LinearLayout.LayoutParams(-1, -2));
 
-        LinearLayout qr = new LinearLayout(this);
+        LinearLayout qr = quickRow = new LinearLayout(this);
         qr.setGravity(Gravity.CENTER_VERTICAL);
         qr.setPadding(0, dp(6), 0, 0);
         quickTabs = new LinearLayout(this);
@@ -226,6 +250,7 @@ public class MainActivity extends AppCompatActivity {
             @Override public void onStopTrackingTouch(SeekBar s) { refreshThumbs(); }
         });
         bottom.addView(quickBar, new LinearLayout.LayoutParams(-1, dp(36)));
+        buildPro();
 
         status = label("", 13, SUB);
         status.setGravity(Gravity.CENTER);
@@ -327,6 +352,9 @@ public class MainActivity extends AppCompatActivity {
                 float r = Math.max(z.getMinZoomRatio(), Math.min(z.getMaxZoomRatio(), z.getZoomRatio() * d.getScaleFactor()));
                 camera.getCameraControl().setZoomRatio(r);
                 overlay.showZoom(r);
+                pro.zoom = r;
+                pro.manual[ProCamera.ZOOM] = Math.abs(r - 1) > 0.02f;
+                if (proOn) { refreshProChips(); if (proSel == ProCamera.ZOOM) showProSlider(); }
                 return true;
             }
         });
@@ -407,8 +435,131 @@ public class MainActivity extends AppCompatActivity {
 
     void showHint() {
         ui.removeCallbacks(hintBack);
+        if (proOn) { status.setText("項目をタップして手動に · 「A」でオートに戻す"); return; }
         String h = PresetStore.hint(current.name);
         status.setText(h != null ? h : "タップでピント · 2本指でズーム · 長押しで加工前");
+    }
+
+    // ---------- プロ撮影 ----------
+
+    void buildPro() {
+        proPanel = new LinearLayout(this);
+        proPanel.setOrientation(LinearLayout.VERTICAL);
+        proPanel.setVisibility(View.GONE);
+        proSlider = new LinearLayout(this);
+        proSlider.setGravity(Gravity.CENTER_VERTICAL);
+        proSlider.setPadding(0, dp(6), 0, 0);
+        proAuto = small("A");
+        proAuto.setTypeface(null, Typeface.BOLD);
+        proAuto.setContentDescription("オート");
+        proAuto.setOnClickListener(v -> { if (proSel >= 0) setProAuto(proSel); });
+        proSlider.addView(proAuto, new LinearLayout.LayoutParams(dp(44), dp(32)));
+        proBar = new SeekBar(this);
+        proBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar sb, int n, boolean user) {
+                if (settingPro || proSel < 0 || !user) return;
+                pro.setPos(proSel, n);
+                applyPro();
+                showProSlider();
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb) {}
+            @Override public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        proSlider.addView(proBar, new LinearLayout.LayoutParams(0, dp(36), 1));
+        proValue = label("", 14, 0xFFB3E5FC);
+        proValue.setGravity(Gravity.END);
+        proSlider.addView(proValue, new LinearLayout.LayoutParams(dp(92), -2));
+        proSlider.setVisibility(View.INVISIBLE);
+        proPanel.addView(proSlider, new LinearLayout.LayoutParams(-1, -2));
+        proChips = new LinearLayout(this);
+        proPanel.addView(proChips, new LinearLayout.LayoutParams(-1, -2));
+        bottom.addView(proPanel, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    void setPro(boolean on, boolean rebind) {
+        proOn = on;
+        prefs.edit().putBoolean("pro", on).apply();
+        proBtn.setBackground(pill(on));
+        quickRow.setVisibility(on ? View.GONE : View.VISIBLE);
+        quickBar.setVisibility(on ? View.GONE : View.VISIBLE);
+        proPanel.setVisibility(on ? View.VISIBLE : View.GONE);
+        if (!on) {
+            // プロを閉じたら全部オートに戻す
+            Arrays.fill(pro.manual, false);
+            pro.zoom = 1;
+            if (camera != null) camera.getCameraControl().setZoomRatio(1);
+            proSel = -1;
+        }
+        refreshProChips();
+        showProSlider();
+        ui.removeCallbacks(proTick);
+        if (on) ui.post(proTick);
+        if (rebind) { appliedEv = Float.NaN; bindCamera(); }
+        showHint();
+    }
+
+    void refreshProChips() {
+        if (proChips == null || !proOn) return;
+        float presetEv = effective(active()).get("camera_ev") / 10f;
+        if (proChips.getChildCount() != ProCamera.LABELS.length) {
+            proChips.removeAllViews();
+            for (int k = 0; k < ProCamera.LABELS.length; k++) {
+                int kk = k;
+                LinearLayout chip = new LinearLayout(this);
+                chip.setOrientation(LinearLayout.VERTICAL);
+                chip.setGravity(Gravity.CENTER);
+                chip.setPadding(dp(2), dp(4), dp(2), dp(4));
+                chip.addView(label(ProCamera.LABELS[k], 11, SUB));
+                TextView val = label("", 13, Color.WHITE);
+                val.setSingleLine(true);
+                chip.addView(val);
+                chip.setOnClickListener(v -> { proSel = proSel == kk ? -1 : kk; refreshProChips(); showProSlider(); });
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(50), 1);
+                lp.setMargins(k == 0 ? 0 : dp(2), dp(6), k == ProCamera.LABELS.length - 1 ? 0 : dp(2), 0);
+                proChips.addView(chip, lp);
+            }
+        }
+        for (int k = 0; k < ProCamera.LABELS.length; k++) {
+            LinearLayout chip = (LinearLayout) proChips.getChildAt(k);
+            chip.setBackground(k == proSel ? rounded(0xCC0288D1, 0, 12) : rounded(pro.manual[k] ? 0x550288D1 : 0x22FFFFFF, 0, 12));
+            TextView t = (TextView) chip.getChildAt(1);
+            t.setText(pro.value(k, presetEv));
+            t.setTextColor(pro.manual[k] ? 0xFFB3E5FC : Color.WHITE);
+        }
+    }
+
+    void showProSlider() {
+        if (proSlider == null) return;
+        float presetEv = effective(active()).get("camera_ev") / 10f;
+        if (!proOn || proSel < 0) { proSlider.setVisibility(View.INVISIBLE); return; }
+        proSlider.setVisibility(View.VISIBLE);
+        boolean ok = pro.can(proSel);
+        proBar.setEnabled(ok);
+        settingPro = true;
+        proBar.setMax(Math.max(1, pro.steps(proSel)));
+        proBar.setProgress(pro.pos(proSel));
+        settingPro = false;
+        proAuto.setBackground(pill(!pro.manual[proSel]));
+        if (!ok) proValue.setText(proSel == ProCamera.EV && pro.manualExposure() ? "SS/ISO手動中" : "非対応");
+        else proValue.setText(pro.detail(proSel, presetEv));
+    }
+
+    void setProAuto(int k) {
+        pro.manual[k] = false;
+        if (k == ProCamera.ZOOM) { pro.zoom = 1; if (camera != null) camera.getCameraControl().setZoomRatio(1); }
+        applyPro();
+        showProSlider();
+    }
+
+    /** 手動の設定をカメラに渡す。オートの項目はカメラ任せ。 */
+    void applyPro() {
+        if (camera == null) { refreshProChips(); return; }
+        if (proSel == ProCamera.ZOOM || pro.manual[ProCamera.ZOOM]) camera.getCameraControl().setZoomRatio(pro.zoom);
+        try { Camera2CameraControl.from(camera.getCameraControl()).setCaptureRequestOptions(proOn ? pro.options() : new androidx.camera.camera2.interop.CaptureRequestOptions.Builder().build()); }
+        catch (Exception e) { say("プロ設定エラー: " + e.getMessage()); }
+        appliedEv = Float.NaN;
+        applyCameraEv(effective(active()));
+        refreshProChips();
     }
 
     // ---------- プリセット一覧 ----------
@@ -802,12 +953,23 @@ public class MainActivity extends AppCompatActivity {
         CameraSelector base = back ? CameraSelector.DEFAULT_BACK_CAMERA : CameraSelector.DEFAULT_FRONT_CAMERA, sel = base;
         boolean hdr = false, hdrMissing = false;
         try {
-            if (hdrWanted && extensions != null) {
+            if (hdrWanted && !proOn && extensions != null) {
                 if (extensions.isExtensionAvailable(base, ExtensionMode.HDR)) { sel = extensions.getExtensionEnabledCameraSelector(base, ExtensionMode.HDR); hdr = true; }
                 else hdrMissing = true;
             }
         } catch (Exception ignored) {}
-        Preview p = new Preview.Builder().build();
+        Preview.Builder pb = new Preview.Builder();
+        // オートの今のシャッター速度・ISO・ピント位置を読む（プロのチップ表示と、片方だけ手動にした時の基準）。HDR 中は付けない
+        if (!hdr) new Camera2Interop.Extender<>(pb).setSessionCaptureCallback(new CameraCaptureSession.CaptureCallback() {
+            @Override public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest r, TotalCaptureResult t) {
+                Long e = t.get(CaptureResult.SENSOR_EXPOSURE_TIME);
+                Integer i = t.get(CaptureResult.SENSOR_SENSITIVITY);
+                Float f = t.get(CaptureResult.LENS_FOCUS_DISTANCE);
+                if (!pro.manualExposure()) { if (e != null) pro.liveExp = e; if (i != null) pro.liveIso = i; }
+                if (f != null && !pro.manual[ProCamera.AF]) pro.liveFocus = f;
+            }
+        });
+        Preview p = pb.build();
         p.setSurfaceProvider(preview.getSurfaceProvider());
         capture = new ImageCapture.Builder().setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY).build();
         provider.unbindAll();
@@ -821,13 +983,15 @@ public class MainActivity extends AppCompatActivity {
         }
         hdrActive = hdr;
         appliedEv = Float.NaN;
-        applyCameraEv(effective(active()));
-        if (hdrWanted && hdrMissing) say("この機種は HDR 撮影に対応していません（通常撮影で続けます）");
+        pro.load(camera.getCameraInfo());
+        applyPro();
+        if (hdrWanted && hdrMissing && !proOn) say("この機種は HDR 撮影に対応していません（通常撮影で続けます）");
     }
 
     void applyCameraEv(Preset p) {
         if (camera == null) return;
         float ev = p.get("camera_ev") / 10f;
+        if (proOn && pro.manual[ProCamera.EV]) ev = pro.ev * pro.evStep;
         if (ev == appliedEv) return;
         try {
             ExposureState es = camera.getCameraInfo().getExposureState();
@@ -842,9 +1006,14 @@ public class MainActivity extends AppCompatActivity {
 
     void focusAt(float x, float y) {
         if (camera == null) return;
+        // 手動にした項目はタップで変えない
+        int flags = 0;
+        if (!(proOn && pro.manual[ProCamera.AF])) flags |= FocusMeteringAction.FLAG_AF;
+        if (!(proOn && pro.manualExposure())) flags |= FocusMeteringAction.FLAG_AE;
+        if (flags == 0) return;
         try {
             MeteringPoint pt = preview.getMeteringPointFactory().createPoint(x, y);
-            camera.getCameraControl().startFocusAndMetering(new FocusMeteringAction.Builder(pt, FocusMeteringAction.FLAG_AF | FocusMeteringAction.FLAG_AE)
+            camera.getCameraControl().startFocusAndMetering(new FocusMeteringAction.Builder(pt, flags)
                     .setAutoCancelDuration(5, TimeUnit.SECONDS).build());
             overlay.showFocus(x, y);
         } catch (Exception ignored) {}
