@@ -19,13 +19,15 @@ Android 12+ のプリセットカメラ。撮影すると原本と加工版を `
 - `Thumbs` … 一覧のサムネイル、`OverlayView` … グリッド・フォーカス・ズーム表示
 - UI は XML を使わずコードで組んでいる（`MainActivity`）
 
-## リリースの手順（これでスマホ用 APK がユーザーの HDD に届く）
+## リリースの手順（ユーザーは GitHub の Release から直接ダウンロードする）
+最新版の固定リンク：https://github.com/orihami/DreamCamera-App/releases/latest/download/DreamCamera.apk（Release に `DreamCamera.apk` も付けている）
+
 1. `app/build.gradle` の versionCode を +1、versionName を新しい版（例 `0.6.0`）に
 2. `docs/releases/<版>.md` に変更点を書く（日本語・ユーザー向け。入れ方も一言）
 3. main に push → Actions が通るのを確認
 4. タグ `<版>`（v を付けない。例 `0.6.0`）を push → Actions が Release を作る
    - クラウド側からタグを push できない（403）時は、Actions の build を手動実行（`release` に印、ブランチ main）。versionName をタグにして同じように Release を作る
-5. ユーザーのラズパイの納品サービスが `make/Android_app_Folder/DreamCamera/<版>/` に自動で届ける
+5. ユーザーには上の固定リンクを伝える（HDD への納品は不要と言われた。ラズパイの納品サービスが動いていれば `make/Android_app_Folder/DreamCamera/<版>/` にも届く）
 
 注意：
 - 署名は Secret `DEBUG_KEYSTORE_B64` の鍵。これ以外の鍵だとスマホに上書きできない（ワークフローが証明書を確認して止める）

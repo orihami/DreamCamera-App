@@ -84,5 +84,8 @@ jobs:
           TAG="${{ steps.check.outputs.name }}"
           NOTES="docs/releases/${TAG}.md"
           [ -f "$NOTES" ] || { echo "::error::$NOTES がありません"; exit 1; }
-          gh release create "$TAG" "DreamCamera-${TAG}-debug.apk" --target "$GITHUB_SHA" \
+          # 版付きの名前に加えて、いつも同じ名前のコピーも付ける
+          # → https://github.com/<repo>/releases/latest/download/DreamCamera.apk が常に最新版になる
+          cp "DreamCamera-${TAG}-debug.apk" DreamCamera.apk
+          gh release create "$TAG" "DreamCamera-${TAG}-debug.apk" DreamCamera.apk --target "$GITHUB_SHA" \
             --title "Dream Camera ${TAG}" --notes-file "$NOTES"

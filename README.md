@@ -13,6 +13,13 @@ Android 12以降向けのプリセットカメラ。撮影1回で原本と加工
 - 原本はカメラの JPEG をそのまま保存（再圧縮なし・Exif 付き）
 - 共有メニュー／写真ボタンから既存写真も加工
 
+## ダウンロード
+
+スマホでこのリンクを開くと、いつでも最新版の APK が落とせます（上書きインストールで更新）：
+https://github.com/orihami/DreamCamera-App/releases/latest/download/DreamCamera.apk
+
+過去の版と変更点は [Releases](https://github.com/orihami/DreamCamera-App/releases) にあります。
+
 初回起動時にカメラ権限を許可してください。
 
 ## ビルド
